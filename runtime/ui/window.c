@@ -1430,10 +1430,15 @@ void window_run(void *(*fn)(void *), void *arg) {
              * An explicit RECOMP_WINDOW_FPS_CAP takes precedence. */
             static int frame_aware = -1;
             if (frame_aware < 0) {
-                const char *e = getenv("RECOMP_WINDOW_FRAME_AWARE");
-                frame_aware = e && *e && *e != '0';
-                if (frame_aware) fprintf(stderr, "    window: experimental frame-aware presentation (30 Hz idle refresh)\n");
+                /* Default on for self-paced presentation; the Performance menu
+                 * persists an explicit choice. Environment override remains
+                 * available for diagnostics and immediate rollback. */
+                frame_aware = settings_int("window_frame_aware", 1);
+                if (frame_aware) fprintf(stderr, "    window: frame-aware presentation (30 Hz idle refresh)\n");
             }
+            { const char *e = getenv("RECOMP_WINDOW_FRAME_AWARE");
+              if (e && *e) frame_aware = *e != '0';
+              else frame_aware = settings_int("window_frame_aware", 1); }
             if (frame_aware) {
                 const uint64_t now = now_us();
                 const int has_new_frame =
@@ -1562,8 +1567,12 @@ void window_run(void *(*fn)(void *), void *arg) {
 			OverlayMark mk[TP_FINGERS + ST_FINGERS + 6]; int nm = 0; float rear[4] = {0, 0, 0, 0};
 			if (flick_down) { touch_to_point(flick_x, flick_y, &mk[nm].x, &mk[nm].y); mk[nm].rear = 0; mk[nm].pressed = 1; mk[nm].cursor = 0; nm++; }
 			if (twist_down) for (int i = 0; i < 2; i++) { touch_to_point(twist_x[i], twist_y[i], &mk[nm].x, &mk[nm].y); mk[nm].rear = 0; mk[nm].pressed = 1; mk[nm].cursor = 0; nm++; }
-			if (cur_mode) { touch_to_point(cur_x[cur_mode - 1], cur_y[cur_mode - 1], &mk[nm].x, &mk[nm].y); mk[nm].rear = cur_mode == 2; mk[nm].pressed = cur_down; mk[nm].cursor = 1; nm++; }
-			if (cur_mode && cur2_on) { touch_to_point(cur2_x[cur_mode - 1], cur2_y[cur_mode - 1], &mk[nm].x, &mk[nm].y); mk[nm].rear = cur_mode == 2; mk[nm].pressed = cur_down; mk[nm].cursor = 1; nm++; }
+			/* Shoulder modifiers alone must not draw a centered cursor.
+			 * Show the stick-controlled marker only once a stick has actually
+			 * moved, and hide it during DS4 touchpad interaction to avoid a
+			 * duplicate crosshair. Touch contacts remain unchanged. */
+			if (cur_mode && !touchpad_active() && (cur_used_l || cur_used_r)) { touch_to_point(cur_x[cur_mode - 1], cur_y[cur_mode - 1], &mk[nm].x, &mk[nm].y); mk[nm].rear = cur_mode == 2; mk[nm].pressed = cur_down; mk[nm].cursor = 1; nm++; }
+			if (cur_mode && cur2_on && !touchpad_active() && (cur_used_l || cur_used_r)) { touch_to_point(cur2_x[cur_mode - 1], cur2_y[cur_mode - 1], &mk[nm].x, &mk[nm].y); mk[nm].rear = cur_mode == 2; mk[nm].pressed = cur_down; mk[nm].cursor = 1; nm++; }
 			for (int i = 0; i < TP_FINGERS; i++) if (tp_down[i]) {
 				touch_to_point(tp_x[i], tp_y[i], &mk[nm].x, &mk[nm].y);
 				mk[nm].rear = tp_port[i]; mk[nm].pressed = !tp_aim_mode() || tp_click_held;
