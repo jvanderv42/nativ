@@ -151,3 +151,38 @@ A build failure should restore the backup via the helper.
 
 Code was reviewed by inspection; Windows compilation and on-device
 validation have **not** yet occurred.
+
+## Persistent frame-aware presentation and shoulder-cursor cleanup
+
+Rebuild with `dev/Invoke-NativTouchpadTestBuild.ps1` to incorporate the
+updated `runtime/ui/window.c` and `runtime/ui/overlay.cpp`.
+
+Frame-aware presentation is now **enabled by default** in self-paced SDL
+GPU modes (Vulkan Mailbox/Immediate). It no longer requires a PowerShell
+environment variable. During gameplay, open **F10 > Performance >
+Frame-aware presentation** to disable or re-enable it; the selection is
+saved using `window_frame_aware` in Nativ's settings. To verify, enable
+`RECOMP_STREAM_TRACE=1` and compare game FPS versus window FPS.
+
+Diagnostic environment overrides remain available:
+- `RECOMP_WINDOW_FRAME_AWARE=0` forces the old self-paced behavior.
+- `RECOMP_WINDOW_FRAME_AWARE=1` forces frame-aware mode.
+- `RECOMP_WINDOW_FPS_CAP=60` takes precedence over frame-aware pacing.
+
+The bumper-held touch cursor no longer appears at the center merely
+because L1/R1 is held. It appears after a stick is moved, and is hidden
+while the DS4 touchpad is actively tracking a finger; the touchpad's
+own finger marker remains visible. This only changes overlay marker
+rendering, not game touch contacts or the existing tap behavior.
+
+The launcher warning `Project Nativ is missing 60 of its files` is a
+separate package-integrity complaint. The development build helper only
+backs up and replaces two runtime source files and the generated
+`game_host.exe`; it does not remove bundled Python files. If the
+warning persists, inspect the missing Python path and compare a newly
+extracted **same-version** release in a separate folder before merging
+or replacing any files. Preserve the installed runtime, backups and
+generated game folders. Do not delete the working game executable.
+
+Windows compilation, launcher file-integrity recovery and on-device
+touch/streaming verification are pending.
