@@ -973,8 +973,17 @@ void window_run(void *(*fn)(void *), void *arg) {
 	active = 1;
 	Game g = {fn, arg};
 	pthread_t t;
-	pthread_attr_t at; pthread_attr_init(&at); pthread_attr_setstacksize(&at, 64u << 20);
-	pthread_create(&t, &at, game_main, &g);
+	pthread_attr_t at;
+	int thread_status = pthread_attr_init(&at);
+	if (!thread_status) {
+		thread_status = pthread_attr_setstacksize(&at, 64u << 20);
+		if (!thread_status) thread_status = pthread_create(&t, &at, game_main, &g);
+		pthread_attr_destroy(&at);
+	}
+	if (thread_status) {
+		fprintf(stderr, "window: unable to start game thread (pthread error %d)\n", thread_status);
+		return;  /* do not enter an idle window loop without a running game */
+	}
 	for (;;) {
 		SDL_Event e;
 		finger_script();
@@ -1428,16 +1437,12 @@ void window_run(void *(*fn)(void *), void *arg) {
              * Input polling above still runs at ~1 kHz while idle. Importantly
              * this is only pacing: GPU locking and fence ordering are untouched.
              * An explicit RECOMP_WINDOW_FPS_CAP takes precedence. */
-            static int frame_aware = -1;
-            if (frame_aware < 0) {
-                /* Default on for self-paced presentation; the Performance menu
-                 * persists an explicit choice. Environment override remains
-                 * available for diagnostics and immediate rollback. */
-                frame_aware = settings_int("window_frame_aware", 1);
-            }
-            { const char *e = getenv("RECOMP_WINDOW_FRAME_AWARE");
-              if (e && *e) frame_aware = *e != '0';
-              else frame_aware = settings_int("window_frame_aware", 1); }
+            /* Read the setting once per pass so an F10 change takes effect immediately.
+             * The environment remains an explicit diagnostic override. */
+            const char *frame_aware_env = getenv("RECOMP_WINDOW_FRAME_AWARE");
+            const int frame_aware = frame_aware_env && *frame_aware_env
+                ? *frame_aware_env != '0'
+                : settings_int("window_frame_aware", 1);
             if (frame_aware) {
                 const uint64_t now = now_us();
                 const int has_new_frame =
