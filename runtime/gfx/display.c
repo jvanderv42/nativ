@@ -19,6 +19,7 @@
 #include "metrics.h"
 #include "settings.h"
 #include "frame_rates.h"   /* per-game 30/60/120 rules and virtual vblank timing */
+#include "frame_clock.h"   /* fixed guest-clock time across frame-rate changes */
 
 static uint64_t raw_us(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (uint64_t)t.tv_sec * 1000000 + t.tv_nsec / 1000; }
 /* the in-game overlay's pause (display_set_paused, called by overlay.cpp as the menu opens and
@@ -103,18 +104,19 @@ static void vblanks_add(uint64_t n) {
  * Ordinary per-frame reads now leave the clock on the vblank grid; a loop that spins on the time
  * still advances it and terminates. */
 static __thread uint32_t reads_in_row;
+static uint64_t fixed_clock_time_us(void);  /* below: guarded by vb_grid_m */
 uint64_t guest_time_us(void) {
 	if (!clock_fixed()) return now_us();
 	if (++reads_in_row > 16) __atomic_add_fetch(&vreads, 1, __ATOMIC_RELAXED);
 	vclock_idle();
-	return (1ull << 32) + vclock_edges() * 16667ull + __atomic_load_n(&vreads, __ATOMIC_RELAXED);
+	return (1ull << 32) + fixed_clock_time_us() + __atomic_load_n(&vreads, __ATOMIC_RELAXED);
 }
 int guest_clock_fixed(void) { return clock_fixed(); }
 /* the same time as guest_time_us without its side effects (the fixed clock advances a microsecond
  * per read past 16 in a row): for an observer that must not perturb what the game sees -- metrics.c */
 uint64_t guest_time_us_peek(void) {
 	if (!clock_fixed()) return now_us();
-	return (1ull << 32) + vclock_edges() * 16667ull + __atomic_load_n(&vreads, __ATOMIC_RELAXED);
+	return (1ull << 32) + fixed_clock_time_us() + __atomic_load_n(&vreads, __ATOMIC_RELAXED);
 }
 /* a thread's own sleep (sceKernelDelayThread) also moves the fixed clock by what it asked for:
  * loading code that polls the time between sleeps, with no vblank wait in the loop, would never
@@ -217,6 +219,13 @@ static uint64_t vblank0, vb_e0;   /* the time of edge vb_e0 (0: the grid not sta
 static uint64_t vb_period = 16667;
 static int vb_grid_rate = 60;     /* the grid's edges a second */
 static pthread_mutex_t vb_grid_m = PTHREAD_MUTEX_INITIALIZER;
+static FrameClock fixed_vclock = {0, 0, 16667};
+static uint64_t fixed_clock_time_us(void) {
+	pthread_mutex_lock(&vb_grid_m);
+	uint64_t us = fc_time_us(&fixed_vclock, vclock_edges());
+	pthread_mutex_unlock(&vb_grid_m);
+	return us;
+}
 static uint64_t wall_edges(void) {   /* edges since the first wait */
 	pthread_mutex_lock(&vb_grid_m);
 	uint64_t t = now_us(); if (!vblank0) vblank0 = t;
@@ -235,7 +244,8 @@ static void vb_grid_follow(int rate) {   /* once a presented frame: the grid at 
 	pthread_mutex_lock(&vb_grid_m);
 	if (p != vb_period) {
 		if (vblank0) { uint64_t t = now_us(), e = vb_e0 + (t - vblank0) / vb_period; vblank0 += (e - vb_e0) * vb_period; vb_e0 = e; }
-		vb_period = p; vb_grid_rate = fr_grid_hz(rate);
+		if (clock_fixed()) fc_rebase(&fixed_vclock, vclock_edges(), p);
+		vb_period = p; __atomic_store_n(&vb_grid_rate, fr_grid_hz(rate), __ATOMIC_RELEASE);
 		static int k; if (k++ < 8) fprintf(stderr, "    vblank grid: %d Hz from frame %llu (frame rate %d)\n", vb_grid_rate, (unsigned long long)frames, rate);
 	}
 	pthread_mutex_unlock(&vb_grid_m);
@@ -340,12 +350,13 @@ static void vb_wait_setbuf(uint64_t target, uint32_t count) {
  * grid at 120 Hz (frame_rates.h). Only the rates the game's pack allows (RECOMP_FRAME_RATES in its RUN_ENV; absent:
  * 30 and 60): the highest allowed one at or below the setting. Experimental: a game's own fixed 1/30 s steps then
  * run at its frame rate. Read every call (once a frame), so the menu's choice applies at once. */
-static int forced_rate = -1;   /* display_force_frame_rate: a capture's switch (verify.c's F6), over everything else */
-void display_force_frame_rate(int fr) { forced_rate = fr; }
+static int forced_rate = -1;   /* display_force_frame_rate: capture override */
+void display_force_frame_rate(int fr) { __atomic_store_n(&forced_rate, fr, __ATOMIC_RELEASE); }
 static int fr_allowed_now(void) { static int m = -1; if (m < 0) m = fr_allowed(getenv("RECOMP_FRAME_RATES")); return m; }
 int display_frame_rates_allowed(void) { return fr_allowed_now(); }   /* (overlay.cpp: the rows it offers) */
 static int frame_rate(void) {
-	if (forced_rate >= 0) return fr_effective(forced_rate, FR_30 | FR_60 | FR_120);
+	int forced = __atomic_load_n(&forced_rate, __ATOMIC_ACQUIRE);
+	if (forced >= 0) return fr_effective(forced, FR_30 | FR_60 | FR_120);
 	const int allowed = fr_allowed_now();
 	static int env = -2; static long from = -2;
 	if (env == -2) { const char *e = getenv("RECOMP_FRAME_RATE"); env = e && *e ? atoi(e) : -1; }
@@ -371,7 +382,7 @@ static int frame_rate(void) {
 }
 int display_frame_rate(void) { return frame_rate(); }   /* 30 | 60 | 120 */
 int display_frame_rate_60(void) { return frame_rate() >= 60; }   /* above 30 (hooks.c: the frame-time hooks on) */
-float display_frame_dt(void) { uint64_t e = __atomic_load_n(clock_fixed() ? &frame_edges_g : &frame_edges, __ATOMIC_RELAXED); return fr_frame_dt(e, vb_grid_rate); }   /* 1/60..1/30 s, 1/120.. at 120 (hooks.c: a game's fixed 1/30 steps above 30 fps) */
+float display_frame_dt(void) { uint64_t e = __atomic_load_n(clock_fixed() ? &frame_edges_g : &frame_edges, __ATOMIC_RELAXED); return fr_frame_dt(e, __atomic_load_n(&vb_grid_rate, __ATOMIC_ACQUIRE)); }   /* 1/60..1/30 s, 1/120.. at 120 (hooks.c: a game's fixed 1/30 steps above 30 fps) */
 static uint32_t swap_interval(uint32_t n) { return fr_swap_interval(n, frame_rate()); }
 static void h_wait_setbuf(Cpu *c) { if (!swap_seen) swap_seen = 1; vb_wait_setbuf(vb_setbuf + 1, 1); RET(0); }
 static void h_wait_setbuf_multi(Cpu *c) { uint32_t n = swap_interval(A0); if (n > swap_seen) swap_seen = n; vb_wait_setbuf(vb_setbuf + n, n); RET(0); }
