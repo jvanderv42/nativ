@@ -1420,11 +1420,38 @@ void window_run(void *(*fn)(void *), void *arg) {
                 current_us = now_us();
             }
             capped_next_us = current_us + interval_us;
-        } else if (self_paced) {   /* original mailbox pacing, unchanged with cap off */
-            const SDL_DisplayMode *dm = SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(win));
-            const uint64_t period = (uint64_t)(1e6 / (dm && dm->refresh_rate > 1 ? dm->refresh_rate : 60.0f));
-            while (!__atomic_load_n(&gnew, __ATOMIC_ACQUIRE) && !__atomic_load_n(&new_frame, __ATOMIC_ACQUIRE) && now_us() - last_paced_us < period) SDL_DelayPrecise(250000);
-            last_paced_us = now_us();
+        } else if (self_paced) {
+            /* RECOMP_WINDOW_FRAME_AWARE=1: submit the window's newest game frame
+             * promptly, but do not keep re-submitting an unchanged one at the
+             * monitor's refresh rate. A 30 Hz idle/UI refresh keeps ImGui menus,
+             * notifications and touch indicators alive when the game is paused.
+             * Input polling above still runs at ~1 kHz while idle. Importantly
+             * this is only pacing: GPU locking and fence ordering are untouched.
+             * An explicit RECOMP_WINDOW_FPS_CAP takes precedence. */
+            static int frame_aware = -1;
+            if (frame_aware < 0) {
+                const char *e = getenv("RECOMP_WINDOW_FRAME_AWARE");
+                frame_aware = e && *e && *e != '0';
+                if (frame_aware) fprintf(stderr, "    window: experimental frame-aware presentation (30 Hz idle refresh)\n");
+            }
+            if (frame_aware) {
+                const uint64_t now = now_us();
+                const int has_new_frame =
+                    __atomic_load_n(&gnew, __ATOMIC_ACQUIRE) ||
+                    __atomic_load_n(&new_frame, __ATOMIC_ACQUIRE);
+                /* No new game image: continue servicing SDL events without
+                 * acquiring a GPU command buffer or the renderer mutex. */
+                if (!has_new_frame && now - last_paced_us < 33333ull) {
+                    SDL_Delay(1);
+                    continue;
+                }
+                last_paced_us = now;
+            } else {   /* original mailbox pacing, unchanged with both options off */
+                const SDL_DisplayMode *dm = SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(win));
+                const uint64_t period = (uint64_t)(1e6 / (dm && dm->refresh_rate > 1 ? dm->refresh_rate : 60.0f));
+                while (!__atomic_load_n(&gnew, __ATOMIC_ACQUIRE) && !__atomic_load_n(&new_frame, __ATOMIC_ACQUIRE) && now_us() - last_paced_us < period) SDL_DelayPrecise(250000);
+                last_paced_us = now_us();
+            }
         }
 		uint64_t t_blit0 = now_us();
         const int tracing = stream_trace_on();
