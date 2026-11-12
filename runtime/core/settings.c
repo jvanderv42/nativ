@@ -110,25 +110,41 @@ static void merge_in(const char *k, const char *v, void *u) {
 	if (m->n == MAXLINE) return;
 	snprintf(m->key[m->n], sizeof m->key[0], "%s", k); snprintf(m->val[m->n], sizeof m->val[0], "%s", v); m->n++;
 }
-static void save_layer(int layer, const char *header) {
+static int save_layer(int layer, const char *header) {
 	int any = 0;
 	for (int i = 0; i < ntab; i++) any |= tab[i].layer == layer && tab[i].dirty;
-	if (!any || !file[layer][0]) return;
-	static struct merged m; m.n = 0;
+	if (!any || !file[layer][0]) return 1;
+	struct merged m = {0};
 	read_file(file[layer], merge_in, &m);
 	for (int i = 0; i < ntab; i++) {
 		if (tab[i].layer != layer || !tab[i].dirty) continue;
 		int j = 0; while (j < m.n && strcmp(m.key[j], tab[i].key)) j++;
-		if (tab[i].gone) { if (j < m.n) { m.n--; memmove(&m.key[j], &m.key[j + 1], sizeof m.key[0] * (size_t)(m.n - j)); memmove(&m.val[j], &m.val[j + 1], sizeof m.val[0] * (size_t)(m.n - j)); } }
-		else { if (j == m.n && m.n < MAXLINE) snprintf(m.key[m.n++], sizeof m.key[0], "%s", tab[i].key); if (j < m.n) snprintf(m.val[j], sizeof m.val[0], "%s", tab[i].val); }
-		tab[i].dirty = 0;
+		if (tab[i].gone) {
+			if (j < m.n) { m.n--; memmove(&m.key[j], &m.key[j + 1], sizeof m.key[0] * (size_t)(m.n - j)); memmove(&m.val[j], &m.val[j + 1], sizeof m.val[0] * (size_t)(m.n - j)); }
+		} else {
+			if (j == m.n && m.n == MAXLINE) {
+				fprintf(stderr, "settings: cannot save %s: too many keys\n", file[layer]);
+				return 0;   /* never silently drop a change */
+			}
+			if (j == m.n) snprintf(m.key[m.n++], sizeof m.key[0], "%s", tab[i].key);
+			snprintf(m.val[j], sizeof m.val[0], "%s", tab[i].val);
+		}
 	}
 	char tmp[530]; snprintf(tmp, sizeof tmp, "%s.tmp", file[layer]);
 	FILE *f = fopen(tmp, "w");
-	if (!f) return;
-	fprintf(f, "%s\n", header);
-	for (int j = 0; j < m.n; j++) fprintf(f, "%s = %s\n", m.key[j], m.val[j]);
-	if (fclose(f) == 0) rename(tmp, file[layer]);   /* whole or not at all */
+	if (!f) { perror("settings: open temporary file"); return 0; }
+	int ok = fprintf(f, "%s\n", header) >= 0;
+	for (int j = 0; ok && j < m.n; j++) ok = fprintf(f, "%s = %s\n", m.key[j], m.val[j]) >= 0;
+	if (fclose(f) != 0) ok = 0;
+	if (ok && rename(tmp, file[layer]) != 0) ok = 0;
+	if (!ok) {
+		fprintf(stderr, "settings: failed to write %s; changes remain pending\n", file[layer]);
+		remove(tmp);
+		return 0;
+	}
+	/* Clear changes only after the replacement file has been committed. */
+	for (int i = 0; i < ntab; i++) if (tab[i].layer == layer) tab[i].dirty = 0;
+	return 1;
 }
 void settings_save(void) {
 	pthread_mutex_lock(&mx);
