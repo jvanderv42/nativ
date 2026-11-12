@@ -212,3 +212,50 @@ do not need additional changes merely to remove the old warning.
 Verification still required: compile the updated launcher on the target
 toolchain, perform a successful and failing Windows development rebuild, and
 check the alert against a deliberately missing non-cache dependency.
+
+## Build and install a Windows launcher without a local Linux/macOS environment
+
+The workflow `.github/workflows/build-windows-launcher.yml` uses a GitHub-hosted
+`ubuntu-22.04` runner to cross-compile the standalone Windows launcher.
+It downloads the version- and SHA-256-pinned LLVM-MinGW and SDL3 packages
+already specified in `runtime/platform/win/setup-toolchain.sh`; the launcher
+does **not** require FFmpeg, zlib, or a full game-runtime rebuild.
+
+The first build is triggered by the workflow's initial commit to
+`feature/controller-touchpad-controls`. Subsequent builds can be rerun via
+GitHub Actions, or triggered using `workflow_dispatch` once the workflow is
+registered on the repository default branch. GitHub typically requires a
+workflow definition to exist on the default branch to expose manual Run
+workflow controls. Do not merge this experimental branch simply to enable
+that control.
+
+In GitHub, open **Actions**, find **Build Windows Nativ Launcher**, select
+a successful run, and download the `nativ-windows-launcher-<run number>`
+artifact. Extract the artifact to a dedicated folder on the Windows gaming PC.
+
+The artifact contains `Project Nativ.exe`, `SDL3.dll`,
+`SHA256SUMS.txt`, and `BUILD-INFO.txt`. It is **not a complete installation**.
+For the current v0.1.5 installation, keep the existing SDL3.dll.
+
+Close Nativ, then in Windows PowerShell 5.1 or PowerShell 7:
+
+```powershell
+$scriptPath = Join-Path $env:TEMP 'Install-NativLauncherBuild.ps1'
+Invoke-WebRequest 'https://raw.githubusercontent.com/jvanderv42/nativ/feature/controller-touchpad-controls/dev/Install-NativLauncherBuild.ps1' -OutFile $scriptPath
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File $scriptPath -artifactFolder 'C:\\Temp\\nativ-windows-launcher-1' -installFolder 'C:\\Installed Games\\ProjectNativ-v0.1.5-windows'
+```
+
+Replace the example `-artifactFolder` with the actual extracted artifact
+location. The installer verifies the launcher against SHA256SUMS, backs up the
+existing launcher into `launcherBackup-YYYYMMDD-HHMMSS`, and replaces **only**
+`Project Nativ.exe`. It does not alter game executables, the integrity
+manifest, source files, or SDL3.dll. Restore the original executable from
+that backup if the new launcher fails to start or has regressions.
+
+The updated integrity checker distinguishes missing files from changed-size
+files; it ignores `.pyc` entries in old manifests. The latest helper
+`dev/Invoke-NativTouchpadTestBuild.ps1` independently updates the manifest
+for intentional source changes after successful game rebuilds.
+
+Validation: The workflow has been authored, but a successful GitHub Actions
+run and an actual Windows launcher installation have not yet been verified.
