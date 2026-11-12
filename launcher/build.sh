@@ -10,7 +10,7 @@
 set -e
 H=${0:A:h}; ROOT=${H:h}
 IMGUI=$ROOT/third_party/imgui; IMGUIOBJ=$ROOT/build/imgui/obj
-CXX=c++; SDL_CFLAGS=($(pkg-config --cflags sdl3 2>/dev/null)); SDL_LIBS=($(pkg-config --libs sdl3 2>/dev/null)); IMFLAGS=()
+CXX=c++; SDL_CFLAGS=(); SDL_LIBS=(); IMFLAGS=()
 LINK=(-lpthread); ROOTDEF=$ROOT
 if [[ $TARGET == windows ]]; then
   WT=${ATIV_WIN_TOOLCHAIN:-$HOME/toolchains/ativ-win}; SDLW=$WT/SDL3/x86_64-w64-mingw32; BIN=$WT/llvm-mingw/bin
@@ -32,6 +32,10 @@ EOF
   $BIN/x86_64-w64-mingw32-windres $W/nativ.rc -O coff -o $W/nativ_res.o
   LINK=($W/nativ_res.o -mwindows -static -lpthread)
 else
+  # Host SDL3 is needed only for native Linux/macOS launcher builds.
+  # The Windows path uses SDL3 from the pinned cross-toolchain, so avoid
+  # invoking host pkg-config before selecting that target.
+  SDL_CFLAGS=($(pkg-config --cflags sdl3 2>/dev/null)); SDL_LIBS=($(pkg-config --libs sdl3 2>/dev/null))
   OUT=${1:-$H/nativ}
   # an install's toolchain (runtime/platform/linux/setup-toolchain.sh; ATIV_LINUX_TOOLCHAIN, else <root>/toolchain when there is one):
   # zig's clang and libc++, SDL3 copied beside the launcher (found through $ORIGIN), nothing of the machine's but its C library
