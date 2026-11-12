@@ -6310,7 +6310,7 @@ void gfx_gpu_present(uint32_t base, uint32_t width, uint32_t height, uint32_t pi
 	if (hitch_log()) {   /* this frame's first-use work and waits, for display.c's hitch line; then the counters start the next frame (RECOMP_GPU_STATS, if also on, zeroed them above already: run one or the other) */
 		GfxGpuFrameCosts c = { .draws = __atomic_load_n(&n_gpu_draws, __ATOMIC_RELAXED), .fallback = __atomic_load_n(&n_fallback, __ATOMIC_RELAXED), .shaders = n_shader_builds, .pipes = n_pipe_builds, .tex_uploads = n_tex_uploads, .tex_new = n_tex_new,
 			.tgt_downloads = n_tgt_downloads, .readback_waits = n_readback_waits, .ring_waits = n_ring_waits, .flushes = n_batch_cmd,
-			.t_total = t_total, .t_shader = t_shader, .t_xlate = t_shader_xlate, .t_msl = t_shader_msl, .t_compile = t_shader_compile, .t_pipe = t_pipe_build, .t_texup = t_texup, .t_tgt_download = t_tgt_download,
+			.t_total = t_total, .t_up_decode = t_up_decode, .t_up_xfer = t_up_xfer, .t_up_submit = t_up_submit, .t_shader = t_shader, .t_xlate = t_shader_xlate, .t_msl = t_shader_msl, .t_compile = t_shader_compile, .t_pipe = t_pipe_build, .t_texup = t_texup, .t_tgt_download = t_tgt_download,
 			.t_readback_wait = t_readback_wait, .t_ring_wait = t_ring_wait, .t_vfetch = t_vfetch, .t_tsync = t_tsync, .t_scene_sync = t_scene_sync, .t_vfetch_max = t_vfetch_max, .t_map = t_map, .shaders_cached = n_shader_cached, .skipped = n_async_skips };
 		for (int i = 0; i < n_fallback_why && i < 4; i++) { c.fb_why[i] = fallback_why[i].why; c.fb_n[i] = fallback_why[i].n; }
 		c.nshaders = (uint32_t)nshaders; c.npipes = (uint32_t)npipelines;
@@ -6318,6 +6318,7 @@ void gfx_gpu_present(uint32_t base, uint32_t width, uint32_t height, uint32_t pi
 		__atomic_store_n(&n_gpu_draws, 0, __ATOMIC_RELAXED); __atomic_store_n(&n_fallback, 0, __ATOMIC_RELAXED); n_fallback_why = 0; n_shader_builds = n_vring_wraps = 0; n_tex_uploads = n_tex_bc = 0; n_tex_new = 0; n_batch_cmd = 0;
 		n_pipe_builds = n_tgt_downloads = n_readback_waits = n_ring_waits = 0; n_async_skips = 0;
 		t_total = t_vfetch = t_texhash = t_texup = t_tsync = t_view = t_submit = t_shader = t_pipe = t_bind = t_setup = t_vbuf = t_pass = t_map = t_acq = t_scene_sync = 0;
+		t_up_decode = t_up_xfer = t_up_submit = 0;   /* per-frame upload phase costs for hitch diagnostics */
 		t_pipe_build = t_tgt_download = t_readback_wait = t_ring_wait = t_shader_xlate = t_shader_msl = t_shader_compile = t_vfetch_max = 0; n_shader_cached = 0;
 	}
 	/* RECOMP_SHOT, RECOMP_USSE_PROFILE and (unless done above) window_present all live in gfx_soft_present */
