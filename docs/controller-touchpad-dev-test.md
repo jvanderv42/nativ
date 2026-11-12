@@ -64,3 +64,40 @@ first results.
 
 The changes were reviewed by source inspection, but Windows compilation and
 streaming execution have not yet been validated.
+
+## Opt-in 60 FPS window presentation cap test
+
+The development branch now supports `RECOMP_WINDOW_FPS_CAP=60` in
+`runtime/ui/window.c`. This caps only the SDL window present loop; it does not
+alter the game's frame-rate setting, GPU locks, Vulkan present mode, or the
+controller/touchpad changes. It is **off by default** and is intended to test
+whether the 120 Hz presentation loop's GPU submissions starve the game renderer
+when the streaming host is active.
+
+Rebuild Uncharted using `dev/Invoke-NativTouchpadTestBuild.ps1` so the new
+source is compiled into its `game_host.exe`. Close Nativ/Uncharted before
+rebuilding. For a diagnostic run, start the game from a PowerShell process that
+sets:
+
+```powershell
+$env:RECOMP_WINDOW_FPS_CAP = '60'
+$env:RECOMP_STREAM_TRACE = '1'
+$env:RECOMP_WAIT_STATS = '10'
+$env:RECOMP_METRICS = '1'
+$env:RECOMP_HITCH_LOG = '100'
+```
+
+Look for `window: diagnostic FPS cap 60` in the new session log to verify
+the variable reached the game. Compare local / streamed / post-stream FPS
+and `stream trace:` rows. The window loop should report approximately 60 FPS
+locally with the cap enabled; if the game still falls to 5 FPS, this cap did
+not resolve the GPU-lock starvation hypothesis.
+
+Rollback: exit Nativ, remove `RECOMP_WINDOW_FPS_CAP` from the launching
+PowerShell environment (or use a new PowerShell process), and relaunch. The
+cap itself does not persist. The built binary retains dormant code but
+normal timing behavior when the variable is unset. Backup the executable
+when running the build helper.
+
+Only source review has been performed; Windows compilation, game execution,
+and streamed performance validation are pending.
