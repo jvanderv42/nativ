@@ -28,3 +28,9 @@ Gamepad finger tracking and the **physical touchpad button** are separate SDL in
 ## Build and verification status
 
 Source changes have been committed on the development branch, but no Windows build, automated test run, or live controller/streaming test has been performed. Nativ's runtime is assembled into game-specific builds; use the project's documented build procedure for a supported title before replacing a working installation.
+
+## Follow-up: streamed touchscreen taps and shoulder cursor
+
+- **Astra 2 Multi-touch mode:** a very short SDL screen-finger press and release may arrive between game touch samples. The input layer now retains a release until its first game contact read, without extending ordinary touches that the game has already observed. Confirm short and long taps both work; test repeated rapid taps, drags, and two-finger touches.
+- **R1 cursor/panel consistency:** the gamepad touchpad now targets the same Vita panel shown by the active shoulder cursor (blue/front or orange/rear) when the finger first lands. With no shoulder held, the configured touchpad default still applies. Verify with R1 held **before** finger-down; releasing or changing shoulders mid-touch does not transfer an existing contact.
+- These are candidate source fixes only. **No Windows build or on-device verification has occurred.**
