@@ -7,6 +7,7 @@ on:
       - feature/controller-touchpad-controls
     paths:
       - .github/workflows/build-windows-distribution.yml
+      - runtime/ui/overlay.cpp
 
 permissions:
   contents: read
