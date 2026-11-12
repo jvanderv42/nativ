@@ -8,6 +8,8 @@ on:
       - feature/controller-touchpad-controls
     paths:
       - .github/workflows/build-windows-launcher.yml
+      - launcher/build.sh
+      - launcher/hub.cpp
 
 permissions:
   contents: read
