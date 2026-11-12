@@ -186,3 +186,29 @@ generated game folders. Do not delete the working game executable.
 
 Windows compilation, launcher file-integrity recovery and on-device
 touch/streaming verification are pending.
+
+## Launcher integrity warning for development builds
+
+The Windows release records file sizes in `.nativ-files`. Previously the launcher
+reported both missing files and size-changed files as "missing", and it checked
+Python `.pyc` bytecode caches that can be regenerated with different sizes.
+
+On `feature/controller-touchpad-controls`:
+- `launcher/hub.cpp` ignores `.pyc` entries, including those in older manifests,
+  and displays separate counts for missing/unreadable and changed-size files.
+- `dev/release.sh` no longer writes generated `.pyc` files into new release
+  manifests. Other Python and runtime dependencies are still checked.
+- `dev/Invoke-NativTouchpadTestBuild.ps1` backs up `.nativ-files` and updates
+  only `runtime/ui/window.c` and `runtime/ui/overlay.cpp` size entries after
+  a successful game rebuild. On build/setup failure, the original manifest
+  is restored with the source files and game executable.
+
+These changes do not patch an already installed launcher executable. The
+launcher must itself be rebuilt to gain the new warning and cache handling.
+The build helper modifies the installed manifest only when run again; it
+does not require a launcher rebuild. Existing, manually repaired installations
+do not need additional changes merely to remove the old warning.
+
+Verification still required: compile the updated launcher on the target
+toolchain, perform a successful and failing Windows development rebuild, and
+check the alert against a deliberately missing non-cache dependency.
