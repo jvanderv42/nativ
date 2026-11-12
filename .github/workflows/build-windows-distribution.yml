@@ -5,9 +5,16 @@ on:
   push:
     branches:
       - feature/controller-touchpad-controls
+      - experimental/120fps
     paths:
       - .github/workflows/build-windows-distribution.yml
       - runtime/ui/overlay.cpp
+      - runtime/ui/frame_rates.h
+      - runtime/gfx/display.c
+      - runtime/core/hooks.c
+      - runtime/tests/frame_rates_test.c
+      - launcher/hub.cpp
+      - packs/PCSA00029/pack.toml
 
 permissions:
   contents: read
@@ -50,6 +57,13 @@ jobs:
           .venv/bin/python -m pip install --upgrade pip
           .venv/bin/python -m pip install -r requirements.txt
 
+      - name: Check frame-rate timing rules
+        shell: bash
+        run: |
+          set -euo pipefail
+          cc -std=c11 -O2 -Wall -Wextra -Werror -Iruntime/ui runtime/tests/frame_rates_test.c -lm -o "$RUNNER_TEMP/frame-rates-test"
+          "$RUNNER_TEMP/frame-rates-test"
+
       - name: Prepare pinned Windows cross-compilation dependencies
         shell: bash
         run: |
@@ -74,6 +88,8 @@ jobs:
           test -s "$RUNNER_TEMP/nativ-package/ProjectNativ/python/python.exe"
           cmp runtime/ui/window.c "$RUNNER_TEMP/nativ-package/ProjectNativ/runtime/ui/window.c"
           cmp runtime/ui/overlay.cpp "$RUNNER_TEMP/nativ-package/ProjectNativ/runtime/ui/overlay.cpp"
+          cmp runtime/ui/frame_rates.h "$RUNNER_TEMP/nativ-package/ProjectNativ/runtime/ui/frame_rates.h"
+          cmp packs/PCSA00029/pack.toml "$RUNNER_TEMP/nativ-package/ProjectNativ/packs/PCSA00029/pack.toml"
 
       - name: Generate and verify release-size manifest
         shell: bash
