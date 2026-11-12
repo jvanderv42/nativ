@@ -16,7 +16,10 @@ int main(void) {
 	snprintf(dir, sizeof dir, "%s/new", root);
 	snprintf(path, sizeof path, "%s/settings.ini", dir);
 	settings_load_shared(path);
+	assert(settings_int("frame_rate", 60) == 60);
+	assert(settings_float("sharpen", 0.35) > 0.34);
 	settings_set_int("frame_rate", 120);
+	assert(settings_int("frame_rate", 60) == 120);
 	settings_save();  /* fopen fails: directory doesn't exist */
 	assert(access(path, F_OK) != 0);
 	assert(mkdir(dir, 0700) == 0);
