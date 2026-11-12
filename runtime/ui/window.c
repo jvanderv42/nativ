@@ -602,6 +602,16 @@ static uint32_t gtl[3];   /* each one's mip levels (window_present_gpu: more tha
 void window_pixel_size(uint32_t *w, uint32_t *h) { *w = win_pw; *h = win_ph; }
 static uint64_t gready_us[3];   /* when each was handed over (the game's flip, as the GPU backend presents it): RECOMP_LATENCY_LOG */
 static int frames_in_flight = 2;
+/* RECOMP_STREAM_TRACE=1: aggregate window-thread timings once a second. Diagnostic
+ * only: no lock, queue or rendering behavior is changed; times include waits.
+ * The game renderer's lock queue/hold times are separately reported by
+ * RECOMP_WAIT_STATS=10 (runtime/debug/waitstats.c). */
+static int stream_trace_on(void) {
+    static int enabled = -1;
+    if (enabled < 0) { const char *e = getenv("RECOMP_STREAM_TRACE"); enabled = e && *e && *e != '0'; }
+    return enabled;
+}
+
 /* the overlay needs real pixels to blend against, and the GPU-rendered path's frame never otherwise
  * touches the CPU; these two transfer buffers (one each direction -- SDL_GPU's usage hint may pick
  * different memory for them, so one buffer doesn't stand in for both) round-trip it through the
@@ -1389,9 +1399,14 @@ void window_run(void *(*fn)(void *), void *arg) {
 			last_paced_us = now_us();
 		}
 		uint64_t t_blit0 = now_us();
+        const int tracing = stream_trace_on();
+        /* These accumulators belong exclusively to the window thread. */
+        static uint64_t trace_at, trace_n, trace_cmd, trace_fence, trace_lock, trace_sweep, trace_swap, trace_submit;
+        uint64_t trace_fence_start = 0, trace_lock_start = 0, trace_sweep_start = 0, trace_swap_start = 0, trace_submit_start = 0;
 		SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(gpu);
 		if (!cmd) continue;
-		uint64_t t_blit1 = now_us();   /* the swapchain wait below is vsync, not a cost metrics.c should count */
+		uint64_t t_blit1 = now_us();
+        if (tracing) trace_cmd += t_blit1 - t_blit0;   /* the swapchain wait below is vsync, not a cost metrics.c should count */
 		/* this loop's frame two submits back is finished before SDL's acquire below looks at its own
 		 * in-flight fence (SDL allows two frames in flight: that fence is this frame's or an older one):
 		 * a locked poll of this loop's own fence for it, then the sweep that retires it from SDL's
@@ -1400,8 +1415,10 @@ void window_run(void *(*fn)(void *), void *arg) {
 		 * host's lock itself; see gpulock.h. The pacing is what it was: the acquire's wait finds the
 		 * fence done and blocks only in nextDrawable, for vsync, as before. */
 		static SDL_GPUFence *frame_fence[3]; static int frame_fi;
+        if (tracing) trace_fence_start = now_us();
 		{ int k = (frame_fi + 3 - frames_in_flight) % 3;   /* the submit SDL's acquire will look at: frames_in_flight back */
 		  if (frame_fence[k]) { SDL_WaitForGPUFences(gpu, true, &frame_fence[k], 1); SDL_ReleaseGPUFence(gpu, frame_fence[k]); frame_fence[k] = 0; } }
+        if (tracing) trace_fence += now_us() - trace_fence_start;
 		/* this loop's SDL_GPU calls under the renderer's lock (gfx_dispatch.c), with Vulkan: SDL's Vulkan backend (3.4.16) isn't
 		 * safe against this thread recording and submitting while the renderer creates, records and submits on others. With
 		 * GPU transfers and snapshots on (gfx_gpu.c), which make and copy more each frame, Killzone crashed inside SDL in this
@@ -1410,14 +1427,20 @@ void window_run(void *(*fn)(void *), void *arg) {
 		 * RECOMP_WINDOW_LOCK=0|1 picks */
 		extern void gfx_lock_enter(void), gfx_lock_leave(void);
 		static int wlock = -1; if (wlock < 0) { const char *e = getenv("RECOMP_WINDOW_LOCK"), *dv = SDL_GetGPUDeviceDriver(gpu); wlock = e && *e ? *e != '0' : dv && !strcmp(dv, "vulkan"); }
+        if (tracing) trace_lock_start = now_us();
 		if (wlock) gfx_lock_enter();
+        if (tracing) { trace_lock += now_us() - trace_lock_start; trace_sweep_start = now_us(); }
 		gpu_sweep(gpu);
+        if (tracing) trace_sweep += now_us() - trace_sweep_start;
 		if (wlock && !self_paced) gfx_lock_leave();   /* (vsync: the acquire waits a refresh, outside the lock) */
 		SDL_GPUTexture *swap = 0;
 		uint32_t ww = 0, wh = 0;
+        if (tracing) trace_swap_start = now_us();
 		int got_swap = SDL_WaitAndAcquireGPUSwapchainTexture(cmd, win, &swap, &ww, &wh);
 		uint64_t t_blit2 = now_us();
+        if (tracing) { trace_swap += t_blit2 - trace_swap_start; trace_lock_start = now_us(); }
 		if (wlock && !self_paced) gfx_lock_enter();
+        if (tracing && !self_paced) trace_lock += now_us() - trace_lock_start;
 		if (got_swap && ww && wh) { win_pw = ww; win_ph = wh; }
 		/* the frame to show, picked after the drawable wait: whatever the game flipped while this loop
 		 * waited for vsync goes out now, not a refresh later */
@@ -1500,7 +1523,9 @@ void window_run(void *(*fn)(void *), void *arg) {
 			if (rear_in_play) { float x0, y0, x1, y1; touch_to_point(0, REAR_Y0, &x0, &y0); touch_to_point(1920, REAR_Y1 + 1, &x1, &y1); rear[0] = x0; rear[1] = y0; rear[2] = x1 - x0; rear[3] = y1 - y0; }
 			overlay_marks(cmd, swap, ww, wh, dt, mk, nm, rear);
 		}
+        if (tracing) trace_submit_start = now_us();
 		frame_fence[frame_fi] = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd); frame_fi = (frame_fi + 1) % 3;   /* vsync via the swapchain paces this loop; the fence is for the poll above, frames_in_flight on */
+        if (tracing) trace_submit += now_us() - trace_submit_start;
 		if (wlock) gfx_lock_leave();
 		uint64_t t_blit3 = now_us();
 		{	/* each newly shown GPU frame: the flip -> submit time, plus the compositor and scan-out estimate,
@@ -1526,6 +1551,21 @@ void window_run(void *(*fn)(void *), void *arg) {
 			}
 			last_shown = gshow;
 		}
+        if (tracing) {
+            ++trace_n;
+            if (!trace_at) trace_at = t_blit3;
+            if (t_blit3 - trace_at >= 1000000 && trace_n) {
+                fprintf(stderr, "    stream trace: window %.1f fps (%llu frames): cmd %.2f, fence %.2f, renderer-lock acquire %.2f, sweep %.2f, swapchain acquire %.2f, submit %.2f ms/frame; total %.1f s\n",
+                    (double)trace_n * 1000000.0 / (double)(t_blit3 - trace_at),
+                    (unsigned long long)trace_n, trace_cmd / (double)trace_n / 1000.0,
+                    trace_fence / (double)trace_n / 1000.0, trace_lock / (double)trace_n / 1000.0,
+                    trace_sweep / (double)trace_n / 1000.0, trace_swap / (double)trace_n / 1000.0,
+                    trace_submit / (double)trace_n / 1000.0,
+                    (double)(t_blit3 - trace_at) / 1000000.0);
+                trace_n = trace_cmd = trace_fence = trace_lock = trace_sweep = trace_swap = trace_submit = 0;
+                trace_at = t_blit3;
+            }
+        }
 		metrics_window_frame((t_blit1 - t_blit0) + (t_blit3 - t_blit2));   /* upload + blit/submit; (t_blit2 - t_blit1) is the vsync wait, excluded */
 
 		char title[160];
