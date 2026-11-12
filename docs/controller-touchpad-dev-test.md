@@ -242,7 +242,7 @@ Close Nativ, then in Windows PowerShell 5.1 or PowerShell 7:
 ```powershell
 $scriptPath = Join-Path $env:TEMP 'Install-NativLauncherBuild.ps1'
 Invoke-WebRequest 'https://raw.githubusercontent.com/jvanderv42/nativ/feature/controller-touchpad-controls/dev/Install-NativLauncherBuild.ps1' -OutFile $scriptPath
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File $scriptPath -artifactFolder 'C:\\Temp\\nativ-windows-launcher-1' -installFolder 'C:\\Installed Games\\ProjectNativ-v0.1.5-windows'
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File $scriptPath -artifactFolder 'C:\Temp\nativ-windows-launcher-1' -installFolder 'C:\Installed Games\ProjectNativ-v0.1.5-windows'
 ```
 
 Replace the example `-artifactFolder` with the actual extracted artifact
