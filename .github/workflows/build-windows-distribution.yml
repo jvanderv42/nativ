@@ -33,10 +33,18 @@ jobs:
             zsh rsync unzip zip xz-utils ca-certificates file make \
             python3-venv python3-pip
 
+      # Nativ imports tomllib, which requires Python 3.11 or later.
+      # Pin the build host to 3.13 rather than relying on Ubuntu's system Python.
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
       - name: Install Python pipeline requirements
         shell: bash
         run: |
           set -euo pipefail
+          python3 -c 'import sys, tomllib; assert sys.version_info >= (3, 11), sys.version'
           python3 -m venv .venv
           .venv/bin/python -m pip install --upgrade pip
           .venv/bin/python -m pip install -r requirements.txt
