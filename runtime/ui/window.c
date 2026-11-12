@@ -71,6 +71,13 @@ static volatile int touch_down, touch_x, touch_y;   /* the mouse as the front to
  * window_touch_contacts. */
 enum { TP_FINGERS = 2, REAR_Y0 = 108, REAR_Y1 = 889 };
 static volatile int tp_down[TP_FINGERS], tp_port[TP_FINGERS], tp_x[TP_FINGERS], tp_y[TP_FINGERS];
+/* Aim mode separates finger hover from Vita contact; a physical click presses. */
+static int tp_click_held, tp_clicked[TP_FINGERS], tp_moved[TP_FINGERS];
+static int tp_start_x[TP_FINGERS], tp_start_y[TP_FINGERS];
+static uint64_t tp_start_us[TP_FINGERS], tp_tap_until_us[TP_FINGERS];
+static int tp_tap_port[TP_FINGERS], tp_tap_x[TP_FINGERS], tp_tap_y[TP_FINGERS];
+static int tp_aim_mode(void) { return settings_int("touchpad_click_to_touch", 1); }
+static int tp_rear_default(void) { return settings_int("touchpad_rear_default", 1); }
 /* a touchscreen's own fingers (screen_finger): the front panel where each touches the picture, the rear with RB held as it lands */
 enum { ST_FINGERS = 6 };
 static volatile int st_down[ST_FINGERS], st_port[ST_FINGERS], st_x[ST_FINGERS], st_y[ST_FINGERS]; static SDL_FingerID st_id[ST_FINGERS];
@@ -385,7 +392,11 @@ int window_touch_contacts(int port, int *keys, int *xs, int *ys, int max) {
 	if (cur_down && cur2_on && cur_mode == port + 1) ADD(3, cur2_x[port], cur2_y[port]);   /* (the second cursor: key 3) */
 	if (port == 0 && flick_down) ADD(4, flick_x, flick_y);   /* (a right-stick flick's swipe: key 4) */
 	if (port == 0 && twist_down) { ADD(5, twist_x[0], twist_y[0]); ADD(6, twist_x[1], twist_y[1]); }   /* (a twist's two fingers: keys 5, 6) */
-	for (int i = 0; i < TP_FINGERS; i++) if (tp_down[i] && tp_port[i] == port) ADD(10 + i, tp_x[i], tp_y[i]);
+	for (int i = 0; i < TP_FINGERS; i++) {
+		if (tp_down[i] && tp_port[i] == port && (!tp_aim_mode() || tp_click_held)) ADD(10 + i, tp_x[i], tp_y[i]);
+		else if (tp_aim_mode() && !tp_down[i] && tp_tap_port[i] == port && now_us() < tp_tap_until_us[i])
+			ADD(10 + i, tp_tap_x[i], tp_tap_y[i]);
+	}
 	for (int i = 0; i < ST_FINGERS; i++) if (st_down[i] && st_port[i] == port) ADD(20 + i, st_x[i], st_y[i]);   /* (a touchscreen's fingers: keys 20+) */
 	#undef ADD
 	if (n && port >= 0 && port < 2) last_touch_key[port] = keys[0];
@@ -396,7 +407,8 @@ static int touchpad_active(void) { for (int i = 0; i < TP_FINGERS; i++) if (tp_d
 /* everything gamepad touch holds, let go: the menu opened, or the pad went away */
 static void gamepad_touch_release(void) {
 	motion_pause();   /* (and the gyro: the next sample starts a fresh interval) */
-	for (int i = 0; i < TP_FINGERS; i++) tp_down[i] = 0;
+	tp_click_held = 0;
+	for (int i = 0; i < TP_FINGERS; i++) { tp_down[i] = tp_clicked[i] = tp_moved[i] = 0; tp_tap_until_us[i] = 0; }
 	cur_down = 0; cur_mode = 0; lb_held = rb_held = 0; ltrig_on = rtrig_on = 0; ptrig[0] = ptrig[1] = 0;
 	cur2_on = 0; cur_used_l = cur_used_r = 0; cur_cross = cur_trig[0] = cur_trig[1] = 0; trig_touch[0] = trig_touch[1] = 0;
 	twist_pad = 0; twist_down = twist_drag;
@@ -1030,6 +1042,11 @@ void window_run(void *(*fn)(void *), void *arg) {
 				if (b == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER || b == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) {
 					const int k = b == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER;
 					if (shoulders_swapped) pad_main(pad, k, dn); else pad_second(pad, k, dn);
+				} else if (b == SDL_GAMEPAD_BUTTON_TOUCHPAD) {
+					tp_click_held = dn;
+					if (dn) for (int f = 0; f < TP_FINGERS; f++) if (tp_down[f]) {
+						tp_clicked[f] = 1; tp_tap_until_us[f] = 0;
+					}
 				} else if (b == SDL_GAMEPAD_BUTTON_SOUTH && (cur_mode || cur_down || cur_cross)) {
 					cur_cross = dn && cur_mode;            /* Cross is the touch while a bumper is held */
 					cur_down = cur_mode && (cur_cross || cur_trig[0] || cur_trig[1]);
@@ -1047,12 +1064,31 @@ void window_run(void *(*fn)(void *), void *arg) {
 			if (e.type == SDL_EVENT_GAMEPAD_TOUCHPAD_DOWN || e.type == SDL_EVENT_GAMEPAD_TOUCHPAD_MOTION || e.type == SDL_EVENT_GAMEPAD_TOUCHPAD_UP) {
 				int f = e.gtouchpad.finger;
 				if (e.gtouchpad.touchpad == 0 && f >= 0 && f < TP_FINGERS) {
-					if (e.type == SDL_EVENT_GAMEPAD_TOUCHPAD_UP) tp_down[f] = 0;
-					else {
-						if (e.type == SDL_EVENT_GAMEPAD_TOUCHPAD_DOWN || !tp_down[f]) tp_port[f] = rb_held;   /* the panel is chosen as the finger lands */
-						float u = e.gtouchpad.x < 0 ? 0 : e.gtouchpad.x > 1 ? 1 : e.gtouchpad.x, v = e.gtouchpad.y < 0 ? 0 : e.gtouchpad.y > 1 ? 1 : e.gtouchpad.y;
+					if (e.type == SDL_EVENT_GAMEPAD_TOUCHPAD_UP) {
+						/* A short stationary finger tap still touches the panel. */
+						if (tp_aim_mode() && tp_down[f] && !tp_clicked[f] && !tp_moved[f] &&
+						    now_us() - tp_start_us[f] <= 250000) {
+							tp_tap_port[f] = tp_port[f]; tp_tap_x[f] = tp_x[f]; tp_tap_y[f] = tp_y[f];
+							tp_tap_until_us[f] = now_us() + 100000;
+						}
+						tp_down[f] = 0;
+					} else {
+						int first = e.type == SDL_EVENT_GAMEPAD_TOUCHPAD_DOWN || !tp_down[f];
+						if (first) {
+							/* Shoulder modifier selects the opposite panel on landing. */
+							tp_port[f] = tp_rear_default() ? !rb_held : rb_held;
+							tp_clicked[f] = tp_click_held; tp_moved[f] = 0;
+							tp_start_us[f] = now_us(); tp_tap_until_us[f] = 0;
+						}
+						float u = e.gtouchpad.x < 0 ? 0 : e.gtouchpad.x > 1 ? 1 : e.gtouchpad.x;
+						float v = e.gtouchpad.y < 0 ? 0 : e.gtouchpad.y > 1 ? 1 : e.gtouchpad.y;
 						tp_x[f] = clampi((int)(u * 1920.f), 0, 1919);
 						tp_y[f] = tp_port[f] ? clampi(REAR_Y0 + (int)(v * (REAR_Y1 - REAR_Y0 + 1)), REAR_Y0, REAR_Y1) : clampi((int)(v * 1088.f), 0, 1087);
+						if (first) { tp_start_x[f] = tp_x[f]; tp_start_y[f] = tp_y[f]; }
+						else {
+							int dx = tp_x[f] - tp_start_x[f], dy = tp_y[f] - tp_start_y[f];
+							if (dx * dx + dy * dy > 55 * 55) tp_moved[f] = 1;
+						}
 						tp_down[f] = 1;
 					}
 				}
@@ -1428,7 +1464,11 @@ void window_run(void *(*fn)(void *), void *arg) {
 			if (twist_down) for (int i = 0; i < 2; i++) { touch_to_point(twist_x[i], twist_y[i], &mk[nm].x, &mk[nm].y); mk[nm].rear = 0; mk[nm].pressed = 1; mk[nm].cursor = 0; nm++; }
 			if (cur_mode) { touch_to_point(cur_x[cur_mode - 1], cur_y[cur_mode - 1], &mk[nm].x, &mk[nm].y); mk[nm].rear = cur_mode == 2; mk[nm].pressed = cur_down; mk[nm].cursor = 1; nm++; }
 			if (cur_mode && cur2_on) { touch_to_point(cur2_x[cur_mode - 1], cur2_y[cur_mode - 1], &mk[nm].x, &mk[nm].y); mk[nm].rear = cur_mode == 2; mk[nm].pressed = cur_down; mk[nm].cursor = 1; nm++; }
-			for (int i = 0; i < TP_FINGERS; i++) if (tp_down[i]) { touch_to_point(tp_x[i], tp_y[i], &mk[nm].x, &mk[nm].y); mk[nm].rear = tp_port[i]; mk[nm].pressed = 1; mk[nm].cursor = 0; nm++; }
+			for (int i = 0; i < TP_FINGERS; i++) if (tp_down[i]) {
+				touch_to_point(tp_x[i], tp_y[i], &mk[nm].x, &mk[nm].y);
+				mk[nm].rear = tp_port[i]; mk[nm].pressed = !tp_aim_mode() || tp_click_held;
+				mk[nm].cursor = tp_aim_mode(); nm++;
+			}
 			for (int i = 0; i < ST_FINGERS; i++) if (st_down[i] && st_port[i]) { touch_to_point(st_x[i], st_y[i], &mk[nm].x, &mk[nm].y); mk[nm].rear = 1; mk[nm].pressed = 1; mk[nm].cursor = 0; nm++; }   /* (a rear touch from the screen: the finger isn't where it lands) */
 			if (mt) { touch_to_point(mtx, mouse_rear_down ? clampi(mty, REAR_Y0, REAR_Y1) : mty, &mk[nm].x, &mk[nm].y); mk[nm].rear = mouse_rear_down; mk[nm].pressed = touch_down || mouse_rear_down; mk[nm].cursor = 1; nm++; }
 			else if (mouse_rear_down) { touch_to_point(mouse_rear_x, mouse_rear_y, &mk[nm].x, &mk[nm].y); mk[nm].rear = 1; mk[nm].pressed = 1; mk[nm].cursor = 0; nm++; }
