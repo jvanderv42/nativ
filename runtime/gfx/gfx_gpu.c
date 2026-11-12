@@ -77,6 +77,14 @@ static uint32_t n_shader_builds, n_vring_wraps;
  * created; a texture uploaded) and its waits (a target download, a readback, a ring wrap), snapshotted
  * at present (gfx_gpu_last_frame_costs) */
 static int hitch_log(void) { static int v = -1; if (v < 0) { const char *e = getenv("RECOMP_HITCH_LOG"); v = e && *e && atoi(e) > 0; } return v; }
+/* Avoid dozens of blocking stderr writes while a level's textures are first
+ * being uploaded. The per-frame hitch report still records every upload and
+ * its total cost. Opt in to 1 ms individual texture logs when needed. */
+static uint64_t slow_texture_log_us(void) {
+	static int ms = -1;
+	if (ms < 0) { const char *e = getenv("RECOMP_GPU_TEXTURE_TRACE_MS"); ms = e && *e ? atoi(e) : 8; if (ms < 1) ms = 1; }
+	return (uint64_t)ms * 1000ull;
+}
 static uint32_t n_pipe_builds, n_tgt_downloads, n_readback_waits, n_ring_waits;
 static uint64_t t_pipe_build, t_tgt_download, t_readback_wait, t_ring_wait, t_shader_xlate, t_shader_msl, t_shader_compile, t_vfetch_max;
 static uint32_t n_shader_cached;   /* shaders whose MSL came from the cache this frame (msl_cache_get) */
@@ -1486,7 +1494,7 @@ static TexEntry *get_texture(const GfxTexture *t) {
 		if (trace_sync()) fprintf(stderr, "gpu trace: texture %#x fmt %#x %ux%u u%#x re-uploaded: %s (%u of %u pages)\n", t->data, t->format, t->width, t->height, t->u_mode, e->stale ? "a target came down over it and its bytes changed" : "its bytes changed", changed, e->nph);
 		e->stale = 0; n_tex_changed++;
 		uint64_t tu0 = us_now(); upload_texture(e, t); tex_account(e); t_texup += us_now() - tu0;
-		if (hitch_log() && us_now() - tu0 > 1000) fprintf(stderr, "    gpu hitch: texture %#x fmt %#x %ux%u layout %d re-uploaded (%s) in %.2f ms\n", t->data, t->format, t->width, t->height, e->layout, e->bc ? "BC blocks" : "decoded", (us_now() - tu0) / 1e3);
+		if (hitch_log() && us_now() - tu0 > slow_texture_log_us()) fprintf(stderr, "    gpu hitch: texture %#x fmt %#x %ux%u layout %d re-uploaded (%s) in %.2f ms\n", t->data, t->format, t->width, t->height, e->layout, e->bc ? "BC blocks" : "decoded", (us_now() - tu0) / 1e3);
 		return e;
 	}
 	if (e) {   /* same slot, another layout or extent: re-decode in place */
@@ -1535,7 +1543,7 @@ static TexEntry *get_texture(const GfxTexture *t) {
 	t_texhash += us_now() - th0;
 	if (moved && hash_bytes(G(t->data), span) == ch) return e;   /* (still those bytes now the pages are closed: a write in between uploads as usual) */
 	{ uint64_t tu0 = us_now(); upload_texture(e, t); tex_account(e); t_texup += us_now() - tu0;
-	  if (hitch_log() && us_now() - tu0 > 1000) fprintf(stderr, "    gpu hitch: texture %#x fmt %#x %ux%u layout %d uploaded new (%s) in %.2f ms\n", t->data, t->format, t->width, t->height, e->layout, e->bc ? "BC blocks" : "decoded", (us_now() - tu0) / 1e3); }
+	  if (hitch_log() && us_now() - tu0 > slow_texture_log_us()) fprintf(stderr, "    gpu hitch: texture %#x fmt %#x %ux%u layout %d uploaded new (%s) in %.2f ms\n", t->data, t->format, t->width, t->height, e->layout, e->bc ? "BC blocks" : "decoded", (us_now() - tu0) / 1e3); }
 	return e;
 }
 
