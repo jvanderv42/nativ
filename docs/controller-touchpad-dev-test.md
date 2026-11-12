@@ -101,3 +101,53 @@ when running the build helper.
 
 Only source review has been performed; Windows compilation, game execution,
 and streamed performance validation are pending.
+
+## Experimental frame-aware presentation (2026-11-11)
+
+Opt-in with `RECOMP_WINDOW_FRAME_AWARE=1` and **unset**
+`RECOMP_WINDOW_FPS_CAP`. Applies to SDL self-paced present modes
+(Mailbox or Immediate), without changing synchronization or the swapchain
+mode. The window loop submits when the game publishes a new image; if the
+game is idle/paused, it continues SDL event polling and provides an
+approximately 30 Hz UI refresh (menus, toasts, touch overlays).
+
+This is a test of redundant window submissions and renderer-lock
+contention, not a proven permanent fix. If an explicit
+`RECOMP_WINDOW_FPS_CAP` is set, that cap takes precedence. If the
+experimental variable is absent, the previous pacing remains unchanged.
+
+### Rebuild and A/B verification
+
+Close the game, run `dev/Invoke-NativTouchpadTestBuild.ps1` from the
+installed player release as documented above, and use a newly built
+`game_host.exe` (the script backs up the previous binary and source).
+
+Start the launcher from the same PowerShell session:
+
+```powershell
+Remove-Item Env:RECOMP_WINDOW_FPS_CAP -ErrorAction SilentlyContinue
+$env:RECOMP_WINDOW_FRAME_AWARE = '1'
+$env:RECOMP_STREAM_TRACE = '1'
+$env:RECOMP_WAIT_STATS = '10'
+$env:RECOMP_METRICS = '1'
+$env:RECOMP_HITCH_LOG = '100'
+& 'C:\Installed Games\ProjectNativ-v0.1.5-windows\Project Nativ.exe'
+```
+
+Verify the session log reports
+`window: experimental frame-aware presentation (30 Hz idle refresh)`.
+Compare 15 seconds local, 15 seconds streaming to Astra 2, 15 seconds
+local again. Include menu open, menu animations, overlay/toast/cursor,
+touch input, and pause/resume in the visual check. Then submit
+`session.log` for review; report whether the streamed picture actually
+looks smooth. The logger measures window FPS and renderer-lock timing.
+
+### Rollback
+
+Close Nativ. Clear `RECOMP_WINDOW_FRAME_AWARE`; restore
+`RECOMP_WINDOW_FPS_CAP=60` and launch through the same PowerShell
+session. Do not disable `RECOMP_WINDOW_LOCK`. This requires no rebuild.
+A build failure should restore the backup via the helper.
+
+Code was reviewed by inspection; Windows compilation and on-device
+validation have **not** yet occurred.
