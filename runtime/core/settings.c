@@ -130,8 +130,8 @@ static int save_layer(int layer, const char *header) {
 				fprintf(stderr, "settings: cannot save %s: too many keys\n", file[layer]);
 				return 0;   /* never silently drop a change */
 			}
-			if (j == m.n) snprintf(m.key[m.n++], sizeof m.key[0], "%s", tab[i].key);
-			snprintf(m.val[j], sizeof m.val[0], "%s", tab[i].val);
+			if (j == m.n) { memcpy(m.key[m.n], tab[i].key, sizeof m.key[0]); m.n++; }
+			memcpy(m.val[j], tab[i].val, sizeof m.val[0]);
 		}
 	}
 	char tmp[530]; snprintf(tmp, sizeof tmp, "%s.tmp", file[layer]);
