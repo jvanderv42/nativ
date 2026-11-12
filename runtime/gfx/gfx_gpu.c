@@ -1260,17 +1260,34 @@ static SDL_GPUTransferBuffer *tring; static uint32_t tring_pos; static uint64_t 
 typedef struct { SDL_GPUFence *f; uint32_t lo, hi; uint64_t lap; } TringUse;
 #define NTRING_USE 256
 static TringUse tring_use[NTRING_USE]; static int ntring_use;
+static uint64_t tring_sweep_count;
+/* Querying every outstanding upload fence on *every* texture caused repeated
+ * driver calls during large upload bursts. Query finished fences periodically,
+ * but always wait for overlap on ring wrap and before the use list fills.
+ * Set RECOMP_GPU_TRING_SWEEP_EVERY=1 to restore the previous query behavior. */
+static unsigned tring_sweep_every(void) {
+	static unsigned n;
+	if (!n) {
+		const char *e = getenv("RECOMP_GPU_TRING_SWEEP_EVERY");
+		int v = e && *e ? atoi(e) : 8;
+		n = (unsigned)(v < 1 ? 1 : v > 64 ? 64 : v);
+	}
+	return n;
+}
 static SDL_GPUTransferBuffer *tring_map_buffer(void) { return tring; }
 static uint8_t *tring_begin(uint32_t bytes, uint32_t *off) {   /* the ring mapped, *off where this upload's bytes go; 0: not through the ring */
 	if (bytes > TRING_BYTES / 4) return 0;
 	if (!tring) { SDL_GPUTransferBufferCreateInfo xci = { .usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD, .size = TRING_BYTES }; if (!(tring = SDL_CreateGPUTransferBuffer(gpu(), &xci))) return 0; }
 	if (tring_pos + bytes > TRING_BYTES) { tring_pos = 0; tring_lap++; }
 	const uint32_t lo = tring_pos, hi = lo + bytes;
+	/* Ownership safety does not rely on proactive fence polling: any reused
+	 * region is checked and waited on regardless of the sweep interval. */
+	const int sweep = (++tring_sweep_count % tring_sweep_every()) == 0 || ntring_use >= NTRING_USE - 16;
 	int k = 0;
 	for (int i = 0; i < ntring_use; i++) {   /* an earlier lap's uploads over this region: finished first (and the finished ones dropped) */
 		TringUse *u = &tring_use[i];
 		if (u->lap < tring_lap && u->lo < hi && u->hi > lo) { uint64_t t0 = us_now(); SDL_WaitForGPUFences(gpu(), true, &u->f, 1); t_ring_wait += us_now() - t0; n_ring_waits++; SDL_ReleaseGPUFence(gpu(), u->f); }
-		else if (SDL_QueryGPUFence(gpu(), u->f)) SDL_ReleaseGPUFence(gpu(), u->f);
+		else if (sweep && SDL_QueryGPUFence(gpu(), u->f)) SDL_ReleaseGPUFence(gpu(), u->f);
 		else tring_use[k++] = *u;
 	}
 	ntring_use = k;
