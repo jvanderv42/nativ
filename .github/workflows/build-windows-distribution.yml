@@ -6,6 +6,7 @@ on:
     branches:
       - feature/controller-touchpad-controls
       - experimental/120fps
+      - improvement/stability-performance-120fps
     paths:
       - .github/workflows/build-windows-distribution.yml
       - runtime/ui/overlay.cpp
@@ -13,6 +14,11 @@ on:
       - runtime/gfx/display.c
       - runtime/core/hooks.c
       - runtime/tests/frame_rates_test.c
+      - runtime/tests/frame_clock_test.c
+      - runtime/tests/settings_save_test.c
+      - runtime/ui/frame_clock.h
+      - runtime/core/settings.c
+      - runtime/ui/window.c
       - launcher/hub.cpp
       - packs/PCSA00029/pack.toml
       - packs/PCSA00107/pack.toml
@@ -65,6 +71,15 @@ jobs:
           cc -std=c11 -O2 -Wall -Wextra -Werror -Iruntime/ui runtime/tests/frame_rates_test.c -lm -o "$RUNNER_TEMP/frame-rates-test"
           "$RUNNER_TEMP/frame-rates-test"
 
+      - name: Check clock transitions and settings-save recovery
+        shell: bash
+        run: |
+          set -euo pipefail
+          cc -std=c11 -O2 -Wall -Wextra -Werror -Iruntime/ui runtime/tests/frame_clock_test.c -o "$RUNNER_TEMP/frame-clock-test"
+          "$RUNNER_TEMP/frame-clock-test"
+          cc -std=c11 -O2 -Wall -Wextra -Werror -pthread -Iruntime/core runtime/tests/settings_save_test.c runtime/core/settings.c -o "$RUNNER_TEMP/settings-save-test"
+          "$RUNNER_TEMP/settings-save-test"
+
       - name: Prepare pinned Windows cross-compilation dependencies
         shell: bash
         run: |
@@ -90,6 +105,9 @@ jobs:
           cmp runtime/ui/window.c "$RUNNER_TEMP/nativ-package/ProjectNativ/runtime/ui/window.c"
           cmp runtime/ui/overlay.cpp "$RUNNER_TEMP/nativ-package/ProjectNativ/runtime/ui/overlay.cpp"
           cmp runtime/ui/frame_rates.h "$RUNNER_TEMP/nativ-package/ProjectNativ/runtime/ui/frame_rates.h"
+          cmp runtime/ui/frame_clock.h "$RUNNER_TEMP/nativ-package/ProjectNativ/runtime/ui/frame_clock.h"
+          cmp runtime/gfx/display.c "$RUNNER_TEMP/nativ-package/ProjectNativ/runtime/gfx/display.c"
+          cmp runtime/core/settings.c "$RUNNER_TEMP/nativ-package/ProjectNativ/runtime/core/settings.c"
           cmp packs/PCSA00029/pack.toml "$RUNNER_TEMP/nativ-package/ProjectNativ/packs/PCSA00029/pack.toml"
 
       - name: Generate and verify release-size manifest
