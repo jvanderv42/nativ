@@ -346,6 +346,9 @@ static void page_performance(void) {
 	if (!ui::rows_begin("perf")) return;
 	ui::row("On-screen stats", "Frame rate and timings drawn over the game. F1 cycles them.");
 	{ static const char *const names[3] = {"Off##osd", "FPS##osd", "Full##osd"}; int lvl = metrics_osd_level(); if (ui::segmented(names, 3, &lvl)) set_osd(lvl); }
+	ui::row("Frame-aware presentation", "Only present newly produced game frames, with periodic UI refreshes while idle. Prevents redundant high-rate GPU submissions (helps streaming). Applies to Mailbox/Immediate modes; an explicit RECOMP_WINDOW_FPS_CAP overrides it.");
+	{ bool on = settings_int("window_frame_aware", 1) != 0;
+	  if (ui::toggle("frameAware", &on)) { settings_set_int("window_frame_aware", on ? 1 : 0); settings_save(); } }
 	ui::row("Frame rate now");
 	{ char b[32]; std::snprintf(b, sizeof b, "%.0f fps", metrics_fps()); ImGui::PushFont(nullptr, ImGui::GetFontSize() * 1.6f); ImGui::TextUnformatted(b); ImGui::PopFont(); }
 	ui::rows_end();
