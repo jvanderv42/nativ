@@ -96,3 +96,49 @@ Switch back to `experimental/120fps` or install Windows distribution #6
 in a separate directory, and restore its original game executables.
 Never merge this improvement branch into the verified release as part of
 performance experimentation.
+
+## Texture-upload burst experiment (post-distribution #13)
+
+The next performance candidate retains all existing upload ordering, GPU
+fences and synchronization. It changes only **when** completed staging-ring
+fences are polled, not when overlapping memory may be reused: overlap always
+waits for its outstanding fence. It sweeps normally every eight allocations,
+or aggressively when the in-flight list approaches capacity.
+
+`RECOMP_GPU_TRING_SWEEP_EVERY=1` restores the original query-per-upload
+behavior in the **same binary**. Compare this against the default (8) at
+the same save location. Look for changes in peak frame time during texture
+bursts and any GPU-driver errors. If the result is not repeatably improved,
+restore 1 or revert the commit.
+
+Detailed per-texture diagnostics normally write only when an individual
+upload exceeds 8 ms (previously 1 ms) to avoid extra synchronous stderr
+writes during 60-texture bursts. The frame hitch summary still reports
+**all** uploads. For fine-grained old-style logs use
+`RECOMP_GPU_TEXTURE_TRACE_MS=1`.
+
+The hitch log now subdivides upload time into `decode`, `stage`
+(transfer buffer/map), and `submit` (command-buffer work). Those
+subtimings are nested inside the total upload time and should not be
+added to it. Test with `RECOMP_HITCH_LOG=18`,
+`RECOMP_METRICS=1`, and `RECOMP_STREAM_TRACE=1`.
+Ensure `RECOMP_GPU_STATS` is **unset** for a clean per-hitch report.
+
+An unknown 1-second event in the previous log is **not yet explained**;
+no speculative GPU locking or resource-lifetime changes have been made.
+
+### A/B launch variables (PowerShell)
+
+```powershell
+# A: updated fence polling (default).
+Remove-Item Env:RECOMP_GPU_TRING_SWEEP_EVERY -ErrorAction SilentlyContinue
+
+# B: original upload-fence polling, without changing executables.
+$env:RECOMP_GPU_TRING_SWEEP_EVERY = '1'
+
+# Optional: original verbose texture event threshold.
+$env:RECOMP_GPU_TEXTURE_TRACE_MS = '1'
+```
+
+These environment variables must be set before launching Project Nativ.
+Close the launcher and game fully between A and B runs.
