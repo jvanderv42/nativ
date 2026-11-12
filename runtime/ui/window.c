@@ -976,12 +976,18 @@ void window_run(void *(*fn)(void *), void *arg) {
 	pthread_attr_t at;
 	int thread_status = pthread_attr_init(&at);
 	if (!thread_status) {
-		thread_status = pthread_attr_setstacksize(&at, 64u << 20);
-		if (!thread_status) thread_status = pthread_create(&t, &at, game_main, &g);
+		/* Preserve the default stack as a fallback if a 64 MB stack is rejected. */
+		int stack_status = pthread_attr_setstacksize(&at, 64u << 20);
+		if (stack_status) fprintf(stderr, "window: 64 MB game stack rejected (%d), using default\n", stack_status);
+		thread_status = pthread_create(&t, &at, game_main, &g);
 		pthread_attr_destroy(&at);
+	} else {
+		fprintf(stderr, "window: pthread_attr_init failed (%d), using default attributes\n", thread_status);
+		thread_status = pthread_create(&t, NULL, game_main, &g);
 	}
 	if (thread_status) {
 		fprintf(stderr, "window: unable to start game thread (pthread error %d)\n", thread_status);
+		active = 0;
 		return;  /* do not enter an idle window loop without a running game */
 	}
 	for (;;) {
