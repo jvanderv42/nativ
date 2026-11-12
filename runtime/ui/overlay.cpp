@@ -455,6 +455,13 @@ static void page_controls(void) {
 		ui::row("L and R buttons", "The shoulder pair that is the game's L and R (aim and fire in a shooter). The other pair holds the touch cursor, or is L2 and R2 in a PS TV layout.");
 		{ static const char *const names[2] = {"Triggers (L2 / R2)##sb", "Bumpers (L1 / R1)##sb"}; char cur[16]; int v = !strcmp(settings_str("shoulder_buttons", "triggers", cur, sizeof cur), "bumpers");
 		  if (ui::segmented(names, 2, &v)) { settings_set_str("shoulder_buttons", v ? "bumpers" : "triggers"); settings_save(); } }
+		ui::row("Controller touchpad target", "Choose whether finger input controls the Vita front or rear panel by default. The rear shoulder modifier selects the opposite panel.");
+		{ static const char *const names[2] = {"Front##tp", "Rear##tp"};
+		  int v = settings_int("touchpad_rear_default", 1) != 0;
+		  if (ui::segmented(names, 2, &v)) { settings_set_int("touchpad_rear_default", v); settings_save(); } }
+		ui::row("Touchpad aim and click", "Move your finger to aim without touching the Vita panel. Physically click to press and drag; a quick finger tap still taps. Turn off to restore direct finger touch.");
+		{ bool on = settings_int("touchpad_click_to_touch", 1) != 0;
+		  if (ui::toggle("tpAim", &on)) { settings_set_int("touchpad_click_to_touch", on ? 1 : 0); settings_save(); } }
 		ui::row("Touch cursor speed", "Hold the shoulder pair that isn't L and R, and move a stick: the cursor is a finger on the touch screen (Cross, L or R presses). Move both sticks for two fingers.");
 		ImGui::SetNextItemWidth(-FLT_MIN); if (ImGui::SliderFloat("##tcs", &P.tcs, 0.25f, 3.0f, "%.2f×")) set_tcs(P.tcs);
 		ui::rows_end();
@@ -672,6 +679,11 @@ static void menu_view(void) {
 }
 static void menu_controls(void) {
 	prefs_load();
+	bool tp_rear = settings_int("touchpad_rear_default", 1) != 0;
+	if (ImGui::MenuItem("Touchpad defaults to rear panel", nullptr, &tp_rear)) { settings_set_int("touchpad_rear_default", tp_rear ? 1 : 0); settings_save(); }
+	bool tp_aim = settings_int("touchpad_click_to_touch", 1) != 0;
+	if (ImGui::MenuItem("Touchpad aim + physical click", nullptr, &tp_aim)) { settings_set_int("touchpad_click_to_touch", tp_aim ? 1 : 0); settings_save(); }
+	ImGui::Separator();
 	ImGui::TextDisabled("Touch cursor speed (hold L1/R1, either stick)");
 	ImGui::SetNextItemWidth(170);
 	if (ImGui::SliderFloat("##tcs", &P.tcs, 0.25f, 3.0f, "%.2fx")) set_tcs(P.tcs);
