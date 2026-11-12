@@ -1,0 +1,119 @@
+name: Build Windows Nativ Distribution
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/controller-touchpad-controls
+    paths:
+      - .github/workflows/build-windows-distribution.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nativ-windows-distribution-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  distribution:
+    name: Package complete Windows player installation
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - name: Check out source and tags
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Linux packaging prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            zsh rsync unzip zip xz-utils ca-certificates file make \
+            python3-venv python3-pip
+
+      - name: Install Python pipeline requirements
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/python -m pip install -r requirements.txt
+
+      - name: Prepare pinned Windows cross-compilation dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          export ATIV_WIN_TOOLCHAIN="$RUNNER_TEMP/ativ-win"
+          bash runtime/platform/win/setup-toolchain.sh
+          test -x "$ATIV_WIN_TOOLCHAIN/llvm-mingw/bin/x86_64-w64-mingw32-clang++"
+          test -f "$ATIV_WIN_TOOLCHAIN/SDL3/x86_64-w64-mingw32/bin/SDL3.dll"
+          test -f "$ATIV_WIN_TOOLCHAIN/zlib/lib/libz.a"
+          test -f "$ATIV_WIN_TOOLCHAIN/ffmpeg/lib/libavcodec.a"
+
+      - name: Assemble complete Windows installation
+        shell: bash
+        run: |
+          set -euo pipefail
+          export ATIV_WIN_TOOLCHAIN="$RUNNER_TEMP/ativ-win"
+          bash dev/windows-install.sh "$RUNNER_TEMP/nativ-package/ProjectNativ"
+          test -s "$RUNNER_TEMP/nativ-package/ProjectNativ/Project Nativ.exe"
+          test -s "$RUNNER_TEMP/nativ-package/ProjectNativ/SDL3.dll"
+          test -x "$RUNNER_TEMP/nativ-package/ProjectNativ/toolchain/llvm-mingw/bin/x86_64-w64-mingw32-clang.exe" || \
+            test -s "$RUNNER_TEMP/nativ-package/ProjectNativ/toolchain/llvm-mingw/bin/x86_64-w64-mingw32-clang.exe"
+          test -s "$RUNNER_TEMP/nativ-package/ProjectNativ/python/python.exe"
+          cmp runtime/ui/window.c "$RUNNER_TEMP/nativ-package/ProjectNativ/runtime/ui/window.c"
+          cmp runtime/ui/overlay.cpp "$RUNNER_TEMP/nativ-package/ProjectNativ/runtime/ui/overlay.cpp"
+
+      - name: Generate and verify release-size manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - "$RUNNER_TEMP/nativ-package/ProjectNativ" <<'PY'
+          import os
+          import sys
+          root = sys.argv[1]
+          rows = []
+          for directory, _, files in os.walk(root):
+              for filename in files:
+                  full = os.path.join(directory, filename)
+                  relative = os.path.relpath(full, root).replace(os.sep, "/")
+                  if relative != ".nativ-files" and not relative.endswith(".pyc") and not os.path.islink(full):
+                      rows.append((relative, os.path.getsize(full)))
+          rows.sort()
+          with open(os.path.join(root, ".nativ-files"), "w", encoding="utf-8", newline="\n") as manifest:
+              for path, size in rows:
+                  manifest.write(f"{size} {path}\n")
+          with open(os.path.join(root, ".nativ-files"), encoding="utf-8") as manifest:
+              for line in manifest:
+                  size, path = line.rstrip("\n").split(" ", 1)
+                  assert os.path.getsize(os.path.join(root, path)) == int(size), path
+          assert any(path == "Project Nativ.exe" for path, _ in rows)
+          assert any(path == "runtime/ui/window.c" for path, _ in rows)
+          assert any(path == "runtime/ui/overlay.cpp" for path, _ in rows)
+          print(f"Validated {len(rows)} distribution files and the manifest")
+          PY
+
+      - name: Package candidate and generate checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/nativ-package"
+          archive="ProjectNativ-windows-candidate-${GITHUB_SHA:0:12}.zip"
+          zip -qry "$archive" ProjectNativ
+          sha256sum "$archive" > SHA256SUMS.txt
+          unzip -tq "$archive" | tail -1
+          printf 'Source: %s\nBranch: %s\nStatus: test candidate; not an official upstream release\nRecompile existing games to incorporate runtime changes.\n' \
+            "$GITHUB_SHA" "$GITHUB_REF_NAME" > BUILD-INFO.txt
+
+      - name: Upload complete Windows distribution candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: nativ-windows-distribution-${{ github.run_number }}
+          path: |
+            ${{ runner.temp }}/nativ-package/ProjectNativ-windows-candidate-*.zip
+            ${{ runner.temp }}/nativ-package/SHA256SUMS.txt
+            ${{ runner.temp }}/nativ-package/BUILD-INFO.txt
+          if-no-files-found: error
+          retention-days: 14
