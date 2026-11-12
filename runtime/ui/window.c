@@ -1456,7 +1456,10 @@ void window_run(void *(*fn)(void *), void *arg) {
                     __atomic_load_n(&new_frame, __ATOMIC_ACQUIRE);
                 /* No new game image: continue servicing SDL events without
                  * acquiring a GPU command buffer or the renderer mutex. */
-                if (!has_new_frame && now - last_paced_us < 33333ull) {
+                /* Keep menus responsive at 60 Hz while retaining a 30 Hz
+                 * idle fallback when nothing interactive is displayed. */
+                const uint64_t idle_period_us = (overlay_is_open() || overlay_dialog_active()) ? 16667ull : 33333ull;
+                if (!has_new_frame && now - last_paced_us < idle_period_us) {
                     SDL_Delay(1);
                     continue;
                 }
