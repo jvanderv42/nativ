@@ -34,3 +34,33 @@ Source changes have been committed on the development branch, but no Windows bui
 - **Astra 2 Multi-touch mode:** a very short SDL screen-finger press and release may arrive between game touch samples. The input layer now retains a release until its first game contact read, without extending ordinary touches that the game has already observed. Confirm short and long taps both work; test repeated rapid taps, drags, and two-finger touches.
 - **R1 cursor/panel consistency:** the gamepad touchpad now targets the same Vita panel shown by the active shoulder cursor (blue/front or orange/rear) when the finger first lands. With no shoulder held, the configured touchpad default still applies. Verify with R1 held **before** finger-down; releasing or changing shoulders mid-touch does not transfer an existing contact.
 - These are candidate source fixes only. **No Windows build or on-device verification has occurred.**
+
+## Streaming performance trace (opt-in, diagnostic only)
+
+The window present loop supports `RECOMP_STREAM_TRACE=1` and logs a once-per-second
+`stream trace:` line showing the window loop's command-buffer acquire, previous
+frame fence wait, renderer-lock acquisition, GPU sweep, swapchain acquisition,
+and command-buffer submission timings (per-frame averages). It changes neither
+the locking behavior nor the Vulkan present mode.
+
+Use these existing diagnostic settings alongside it:
+- `RECOMP_WAIT_STATS=10` — report renderer-lock waits/hold times and per-thread
+  CPU / kernel waits every 10 game presents (more frequent under severe slowdown).
+- `RECOMP_METRICS=1` — per-second game and window metrics.
+- `RECOMP_HITCH_LOG=100` — frame hitches over 100 ms.
+
+Run the updated dev build helper to download the latest `runtime/ui/window.c`
+and rebuild `PCSA00029`. Set all four environment variables in PowerShell,
+then launch `Project Nativ.exe` **from that same PowerShell process** so the
+game inherits them. Record a local segment, start the Astra 2 stream, then
+disconnect and record recovery. Retrieve the new `session.log` and compare
+the `stream trace:`, `waits:`, and `metrics:` lines across segments.
+
+Important: this trace currently measures window-thread SDL calls and waits.
+The existing waitstats profiler measures the renderer mutex. It does **not**
+separately time each renderer-side Vulkan submission or every SDL fence helper.
+If those need finer tracing, add a subsequent targeted diagnostic based on the
+first results.
+
+The changes were reviewed by source inspection, but Windows compilation and
+streaming execution have not yet been validated.
