@@ -1,0 +1,93 @@
+name: Build Windows Nativ Launcher
+
+on:
+  workflow_dispatch:
+  # Bootstrap builds on the isolated development branch without modifying main.
+  push:
+    branches:
+      - feature/controller-touchpad-controls
+    paths:
+      - .github/workflows/build-windows-launcher.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nativ-windows-launcher-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Cross-compile launcher
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout requested revision
+        uses: actions/checkout@v4
+
+      - name: Install required host utilities
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends zsh python3 xz-utils ca-certificates
+
+      - name: Install pinned Windows cross-compiler and SDL3
+        shell: bash
+        run: |
+          set -euo pipefail
+          toolchain="$RUNNER_TEMP/nativ-win-toolchain"
+          mkdir -p "$toolchain"
+          cd "$toolchain"
+
+          llvm_asset="llvm-mingw-20261006-ucrt-ubuntu-22.04-x86_64.tar.xz"
+          llvm_sha="5f9c6ed95b2d4bdb2869a488c5fd5857fbdabcf288a0aa3eb1da43f6a08d8ab4"
+          curl -fL --retry 3 --output "$llvm_asset" \
+            "https://github.com/mstorsjo/llvm-mingw/releases/download/20261006/$llvm_asset"
+          echo "$llvm_sha  $llvm_asset" | sha256sum --check -
+          tar -xf "$llvm_asset"
+          mv "${llvm_asset%.tar.xz}" llvm-mingw
+
+          sdl_asset="SDL3-devel-3.4.16-mingw.tar.gz"
+          sdl_sha="c7ef65bd72eabac6e5b535411dbd8d5824d0aab24fd62ff8812666b336f18a9c"
+          curl -fL --retry 3 --output "$sdl_asset" \
+            "https://github.com/libsdl-org/SDL/releases/download/release-3.4.16/$sdl_asset"
+          echo "$sdl_sha  $sdl_asset" | sha256sum --check -
+          tar -xzf "$sdl_asset"
+          mv SDL3-3.4.16 SDL3
+          test -x llvm-mingw/bin/x86_64-w64-mingw32-clang++
+          test -f SDL3/x86_64-w64-mingw32/lib/libSDL3.dll.a
+          test -f SDL3/x86_64-w64-mingw32/bin/SDL3.dll
+
+      - name: Compile Windows launcher
+        shell: bash
+        env:
+          TARGET: windows
+        run: |
+          set -euo pipefail
+          export ATIV_WIN_TOOLCHAIN="$RUNNER_TEMP/nativ-win-toolchain"
+          mkdir -p "$RUNNER_TEMP/nativ-launcher-output"
+          zsh launcher/build.sh "$RUNNER_TEMP/nativ-launcher-output/Project Nativ.exe"
+          test -s "$RUNNER_TEMP/nativ-launcher-output/Project Nativ.exe"
+
+      - name: Verify Windows executable and stage artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/nativ-launcher-output"
+          file "Project Nativ.exe"
+          file "Project Nativ.exe" | grep -q 'PE32+ executable'
+          test -s SDL3.dll
+          sha256sum "Project Nativ.exe" SDL3.dll > SHA256SUMS.txt
+          printf 'Source commit: %s\nBranch: %s\nOnly replace Project Nativ.exe for an existing v0.1.5 Windows installation.\nPreserve your previous launcher for rollback.\n' \
+            "$GITHUB_SHA" "$GITHUB_REF_NAME" > BUILD-INFO.txt
+
+      - name: Upload standalone launcher (not a full installation)
+        uses: actions/upload-artifact@v4
+        with:
+          name: nativ-windows-launcher-${{ github.run_number }}
+          path: |
+            ${{ runner.temp }}/nativ-launcher-output/Project Nativ.exe
+            ${{ runner.temp }}/nativ-launcher-output/SDL3.dll
+            ${{ runner.temp }}/nativ-launcher-output/SHA256SUMS.txt
+            ${{ runner.temp }}/nativ-launcher-output/BUILD-INFO.txt
+          if-no-files-found: error
+          retention-days: 30
