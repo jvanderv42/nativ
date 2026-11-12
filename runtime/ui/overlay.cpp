@@ -48,6 +48,7 @@
 #include "gpulock.h"   /* the SDL submit below is the locked one, and ImGui's own submits run under the same lock (render_frame): Homebrew SDL 3.4.16's Metal fence race, see that header */
 #include "overlay.h"
 #include "savedlg.h"
+#include "frame_rates.h"   /* allowed per-game frame rates */
 #include "ui_theme.h"
 #define STBI_NO_STDIO
 #include "third_party/stb/stb_image.h"   /* (its implementation: runtime/media/jpeg.c) */
@@ -67,6 +68,7 @@ extern "C" {
 int net_online(void); const char *net_online_needs(void);
 /* display.c */
 void display_set_paused(int on);
+int display_frame_rates_allowed(void);  /* per-game RECOMP_FRAME_RATES mask */
 /* window.c */
 int window_get_aspect(void); void window_set_aspect(int mode);
 int window_get_fullscreen(void); void window_set_fullscreen(int on);
@@ -356,8 +358,12 @@ static void page_performance(void) {
 static void page_game(void) {
 	prefs_load();
 	if (!ui::rows_begin("game")) return;
-	ui::row("Frame rate", "60 is experimental: parts of a game timed in fixed 1/30 s steps can run fast.");
-	{ static const char *const names[2] = {"30##fr", "60##fr"}; int v = P.fr >= 60; if (ui::segmented(names, 2, &v)) set_frame_rate(v ? 60 : 30); }
+	ui::row("Frame rate", "Above 30 FPS is experimental. 120 FPS needs game-specific timing support and may affect gameplay.");
+	{ const int allowed = display_frame_rates_allowed(); int rates[3]; const int count = fr_list(allowed, rates);
+	  const int active = fr_effective(P.fr, allowed); int selected = 0;
+	  for (int i = 0; i < count; i++) if (rates[i] == active) selected = i;
+	  static const char *const labels[3] = {"30##fr", "60##fr", "120##fr"};
+	  if (ui::segmented(labels, count, &selected)) set_frame_rate(rates[selected]); }
 	if (game_option("fov")) {
 		ui::row("Field of view", "A wider view. 1.00× is the game's own.");
 		ImGui::SetNextItemWidth(-FLT_MIN); if (ImGui::SliderFloat("##fov", &P.fov, 0.75f, 1.5f, "%.2f×")) set_fov(P.fov);
@@ -667,8 +673,13 @@ static void menu_view(void) {
 	if (game_option("scenery_detail")) { ImGui::TextDisabled("Scenery detail"); ImGui::SetNextItemWidth(170); if (ImGui::SliderFloat("##scen", &P.scen, 1.0f, 8.0f, "%.1fx")) set_scen(P.scen); }
 	if (game_option("character_detail")) { ImGui::TextDisabled("Character detail"); ImGui::SetNextItemWidth(170); if (ImGui::SliderFloat("##chr", &P.chr, 1.0f, 8.0f, "%.1fx")) set_chr(P.chr); }
 	if (ImGui::BeginMenu("Frame rate")) {
-		if (ImGui::MenuItem("30", nullptr, P.fr < 60)) set_frame_rate(30);
-		if (ImGui::MenuItem("60 (experimental)", nullptr, P.fr >= 60)) set_frame_rate(60);
+		const int allowed = display_frame_rates_allowed(); int rates[3], count = fr_list(allowed, rates);
+		const int active = fr_effective(P.fr, allowed);
+		for (int i = 0; i < count; i++) {
+			const int rate = rates[i];
+			const char *name = rate == 120 ? "120 (experimental)" : rate == 60 ? "60 (experimental)" : "30";
+			if (ImGui::MenuItem(name, nullptr, active == rate)) set_frame_rate(rate);
+		}
 		ImGui::EndMenu();
 	}
 	if (ImGui::BeginMenu("On-screen stats")) {
