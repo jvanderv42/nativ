@@ -104,10 +104,10 @@ void settings_set_float(const char *key, double v) { char b[32]; snprintf(b, siz
 /* saving merges: the file as it is on disk now (the launcher, or another game, may have written it since it was read),
  * with this run's changes over it -- set, or removed -- so nobody's edit is lost to a whole-table write */
 #define MAXLINE 200
-struct merged { int n; char key[MAXLINE][32], val[MAXLINE][96]; };
+struct merged { int n, truncated; char key[MAXLINE][32], val[MAXLINE][96]; };
 static void merge_in(const char *k, const char *v, void *u) {
 	struct merged *m = u;
-	if (m->n == MAXLINE) return;
+	if (m->n == MAXLINE) { m->truncated = 1; return; }
 	snprintf(m->key[m->n], sizeof m->key[0], "%s", k); snprintf(m->val[m->n], sizeof m->val[0], "%s", v); m->n++;
 }
 static int save_layer(int layer, const char *header) {
@@ -116,6 +116,10 @@ static int save_layer(int layer, const char *header) {
 	if (!any || !file[layer][0]) return 1;
 	struct merged m = {0};
 	read_file(file[layer], merge_in, &m);
+	if (m.truncated) {
+		fprintf(stderr, "settings: cannot save %s: existing file exceeds %d settings\n", file[layer], MAXLINE);
+		return 0;
+	}
 	for (int i = 0; i < ntab; i++) {
 		if (tab[i].layer != layer || !tab[i].dirty) continue;
 		int j = 0; while (j < m.n && strcmp(m.key[j], tab[i].key)) j++;
