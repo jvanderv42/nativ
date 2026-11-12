@@ -1063,12 +1063,10 @@ static void render_frame(SDL_GPUCommandBuffer *cmd, SDL_GPUTexture *target, uint
 	if (!g_ctx || !w || !h) return;
 	ImGui::SetCurrentContext(g_ctx);
 	ImGuiIO &io = ImGui::GetIO();
-	/* Enable keyboard and gamepad navigation for the full menu or an interactive Vita
-	 * save-data dialog. window.c routes input to ImGui while the dialog is active;
-	 * otherwise the closed menu bar remains pointer-only and gameplay keeps its input. */
+	/* keyboard and gamepad navigation only while the full menu is up: the bar is pointer-only, and while
+	 * it's closed a game's keys and pad are the game's (window.c forwards only mouse events then) */
 	io.ConfigFlags &= ~(ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad);
-	if (g_open || (have_window && overlay_dialog_active()))
-		io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
+	if (g_open) io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
 	ImGui_ImplSDLGPU3_NewFrame();
 	if (have_window) {
 		ImGui_ImplSDL3_NewFrame();
