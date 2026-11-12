@@ -330,26 +330,41 @@ static void update_check_start(void) {
 		}
 	}).detach();
 }
-/* ---- an install with files missing or cut short: the release's own list (.nativ-files, "size path" a line: dev/release.sh
- * writes it into the Windows zip, the one install a player unpacks), checked in the background at start. A player's Python
- * once lacked Lib\collections, an unpacking that stopped part way (2026-10-30): the firmware step died on a traceback */
-static struct { std::mutex m; int bad = 0; std::string first; bool dismissed = false; } g_files;
+/* ---- Compare installed files against the release's size manifest (.nativ-files).
+ * Generated Python bytecode caches are not stable across runs and are intentionally
+ * excluded, including when reading manifests from older Windows releases.
+ * Distinguish missing/unreadable paths from changed sizes: development rebuilds
+ * may legitimately replace source files without breaking the installation. */
+static struct { std::mutex m; int missing = 0, changed = 0; std::string first_missing, first_changed; bool dismissed = false; } g_files;
+static bool files_generated_cache(const std::string &rel) {
+	return rel.size() >= 4 && rel.compare(rel.size() - 4, 4, ".pyc") == 0;
+}
 static void files_check(void) {
 	FILE *f = fopen((g_root + "/.nativ-files").c_str(), "rb"); if (!f) return;
-	char line[2048]; int bad = 0; std::string first;
+	char line[2048]; int missing = 0, changed = 0;
+	std::string first_missing, first_changed;
 	while (fgets(line, sizeof line, f)) {
 		char *sp = strchr(line, ' '); if (!sp) continue;
-		*sp = 0; std::string rel(sp + 1); while (!rel.empty() && (rel.back() == '\n' || rel.back() == '\r')) rel.pop_back();
+		*sp = 0; std::string rel(sp + 1);
+		while (!rel.empty() && (rel.back() == '\n' || rel.back() == '\r')) rel.pop_back();
+		if (files_generated_cache(rel)) continue;
 		struct stat st; const long long want = atoll(line);
-		if (stat((g_root + "/" + rel).c_str(), &st) != 0 || (long long)st.st_size != want) { if (!bad++) first = rel; }
+		if (stat((g_root + "/" + rel).c_str(), &st) != 0) {
+			if (!missing++) first_missing = rel;
+		} else if ((long long)st.st_size != want) {
+			if (!changed++) first_changed = rel;
+		}
 	}
 	fclose(f);
-	if (!bad) return;
-	fprintf(stderr, "install: %d of the release's files missing or cut short (the first: %s)\n", bad, first.c_str());
+	if (missing || changed) fprintf(stderr, "install: %d missing/unreadable, %d changed-size release files (first missing: %s; first changed: %s)\n",
+		missing, changed, first_missing.c_str(), first_changed.c_str());
 #ifdef _WIN32
-	std::replace(first.begin(), first.end(), '/', '\\');
+	std::replace(first_missing.begin(), first_missing.end(), '/', '\\');
+	std::replace(first_changed.begin(), first_changed.end(), '/', '\\');
 #endif
-	std::lock_guard<std::mutex> l(g_files.m); g_files.bad = bad; g_files.first = first;
+	std::lock_guard<std::mutex> l(g_files.m);
+	g_files.missing = missing; g_files.changed = changed;
+	g_files.first_missing = std::move(first_missing); g_files.first_changed = std::move(first_changed);
 }
 static void files_check_start(void) { std::thread(files_check).detach(); }
 static Step step(const std::string &say, std::vector<std::string> argv = {}, int group = 0) { Step s; s.say = say; s.argv = std::move(argv); s.group = group; return s; }
@@ -1648,11 +1663,20 @@ static void hub_ui(SDL_Window *win) {
 		if (ui::primary_button("Set up the firmware")) { g_setup_step = 1; g_setup_open = true; }
 		ImGui::EndChild(); ImGui::PopStyleColor();
 	}
-	{	int bad = 0; std::string first; { std::lock_guard<std::mutex> l(g_files.m); if (!g_files.dismissed) { bad = g_files.bad; first = g_files.first; } }
-		if (bad) {   /* the install is missing files (files_check_start) */
+	{	int missing = 0, changed = 0; std::string first_missing, first_changed;
+		{ std::lock_guard<std::mutex> l(g_files.m); if (!g_files.dismissed) {
+			missing = g_files.missing; changed = g_files.changed;
+			first_missing = g_files.first_missing; first_changed = g_files.first_changed;
+		} }
+		if (missing || changed) {
 			ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(ui::warn.x, ui::warn.y, ui::warn.z, 0.10f));
 			ImGui::BeginChild("filesnote", ImVec2(0, 0), ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysUseWindowPadding);
-			ui::dot(ui::warn); ImGui::TextWrapped("Project Nativ is missing %d of its files (the first: %s), so adding games and building them will fail. Unpack the whole zip again into an empty folder, and wait until it has finished. If files go missing again, your antivirus may be removing them.", bad, first.c_str());
+			if (missing) {
+				ui::dot(ui::warn); ImGui::TextWrapped("Project Nativ cannot find or read %d release file%s (the first: %s). Some operations may fail. Check extraction and antivirus quarantine; if necessary, extract the full release into a new folder.", missing, missing == 1 ? "" : "s", first_missing.c_str());
+			}
+			if (changed) {
+				ui::dot(ui::warn); ImGui::TextWrapped("%d release file%s differ in size from the original package (the first: %s). This can be normal after a development rebuild. If you have not modified the installation, compare with a fresh copy of the same release.", changed, changed == 1 ? "" : "s", first_changed.c_str());
+			}
 			if (ImGui::Button("Not now##files")) { std::lock_guard<std::mutex> l(g_files.m); g_files.dismissed = true; }
 			ImGui::EndChild(); ImGui::PopStyleColor();
 		}
