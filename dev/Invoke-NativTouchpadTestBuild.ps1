@@ -64,7 +64,7 @@ foreach ($sourcePath in $sourcePaths) {
 }
 Copy-Item -LiteralPath $mainBinary -Destination (Join-Path $backupFolder 'game_host.exe')
 
-# Preserve the original release manifest before any development size adjustments.
+# Back up the original release integrity manifest before any changes.
 $manifestPath = Join-Path $installFolder '.nativ-files'
 $manifestBackupPath = Join-Path $backupFolder '.nativ-files'
 $hasManifest = Test-Path -LiteralPath $manifestPath -PathType Leaf
@@ -94,17 +94,37 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Nativ build failed (exit code $LASTEXITCODE)." }
     Assert-FileExists $mainBinary 'Rebuilt game executable'
 
-    # The two replaced source files are expected to differ from the packaged
-    # release. Update only their size entries after a successful build, leaving
-    # validation enabled for the rest of the installation.
+    # Only the two source files updated by this helper need revised manifest sizes.
+    # Keep every other release entry intact, so missing dependencies are still detected.
     if ($hasManifest) {
         $manifestLines = [System.IO.File]::ReadAllLines($manifestPath)
         $updatedCounts = @{}
         foreach ($sourcePath in $sourcePaths) { $updatedCounts[$sourcePath] = 0 }
 
-        $updatedLines = @(
-            foreach ($line in $manifestLines) {
-                if ($line -match '^(\\d+) (.+)
+        $newManifestLines = @(
+            foreach ($manifestLine in $manifestLines) {
+                $parts = $manifestLine.Split([char]' ', 2)
+                if ($parts.Length -eq 2 -and $updatedCounts.ContainsKey($parts[1])) {
+                    $sourcePath = $parts[1]
+                    $updatedCounts[$sourcePath]++
+                    $fileLength = (Get-Item -LiteralPath (Join-Path $installFolder $sourcePath) -ErrorAction Stop).Length
+                    [string]$fileLength + ' ' + $sourcePath
+                }
+                else {
+                    $manifestLine
+                }
+            }
+        )
+        foreach ($sourcePath in $sourcePaths) {
+            if ($updatedCounts[$sourcePath] -ne 1) {
+                throw "Expected one manifest entry for $sourcePath. Found $($updatedCounts[$sourcePath])."
+            }
+        }
+        $utf8Encoding = New-Object System.Text.UTF8Encoding($false)
+        [System.IO.File]::WriteAllLines($manifestPath, [string[]]$newManifestLines, $utf8Encoding)
+        Write-Host 'Adjusted the two development source sizes in the integrity manifest.'
+    }
+    Write-Host 'Build completed. Launch Uncharted from Nativ and test your touchpad.' -ForegroundColor Green
     Write-Host "Backup folder: $backupFolder"
 }
 catch {
@@ -118,48 +138,6 @@ catch {
     if ($hasManifest) {
         Copy-Item -LiteralPath $manifestBackupPath -Destination $manifestPath -Force
     }
-    Write-Warning "Original runtime sources, game executable and manifest (if present) restored. Backups remain at $backupFolder"
-    throw
-}
-finally {
-    Remove-Item -LiteralPath $temporaryFolder -Recurse -Force -ErrorAction SilentlyContinue
-}
- -and $updatedCounts.ContainsKey($Matches[2])) {
-                    $sourcePath = $Matches[2]
-                    $updatedCounts[$sourcePath]++
-                    $sourceLength = (Get-Item -LiteralPath (Join-Path $installFolder $sourcePath) -ErrorAction Stop).Length
-                    "$sourceLength $sourcePath"
-                }
-                else {
-                    $line
-                }
-            }
-        )
-        foreach ($sourcePath in $sourcePaths) {
-            if ($updatedCounts[$sourcePath] -ne 1) {
-                throw "Expected exactly one manifest entry for $sourcePath; found $($updatedCounts[$sourcePath])."
-            }
-        }
-        $utf8Encoding = New-Object System.Text.UTF8Encoding($false)
-        [System.IO.File]::WriteAllText(
-            $manifestPath,
-            (($updatedLines -join "`n") + "`n"),
-            $utf8Encoding
-        )
-        Write-Host 'Updated manifest sizes for the two rebuilt development source files.'
-    }
-
-    Write-Host 'Build completed. Launch Uncharted from Nativ and test your touchpad.' -ForegroundColor Green
-    Write-Host "Backup folder: $backupFolder"
-}
-catch {
-    Write-Warning "Build/setup failed: $($_.Exception.Message)"
-    if ($sourceChanged) {
-        foreach ($sourcePath in $sourcePaths) {
-            Copy-Item -LiteralPath (Join-Path $backupFolder $sourcePath) -Destination (Join-Path $installFolder $sourcePath) -Force
-        }
-    }
-    Copy-Item -LiteralPath (Join-Path $backupFolder 'game_host.exe') -Destination $mainBinary -Force
     Write-Warning "Original runtime sources and game executable restored. Backups remain at $backupFolder"
     throw
 }
