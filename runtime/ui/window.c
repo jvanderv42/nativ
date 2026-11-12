@@ -1434,7 +1434,6 @@ void window_run(void *(*fn)(void *), void *arg) {
                  * persists an explicit choice. Environment override remains
                  * available for diagnostics and immediate rollback. */
                 frame_aware = settings_int("window_frame_aware", 1);
-                if (frame_aware) fprintf(stderr, "    window: frame-aware presentation (30 Hz idle refresh)\n");
             }
             { const char *e = getenv("RECOMP_WINDOW_FRAME_AWARE");
               if (e && *e) frame_aware = *e != '0';
