@@ -12,6 +12,8 @@ on:
       - runtime/ui/overlay.cpp
       - runtime/ui/frame_rates.h
       - runtime/gfx/display.c
+      - runtime/gfx/gfx.h
+      - runtime/gfx/gfx_gpu.c
       - runtime/core/hooks.c
       - runtime/tests/frame_rates_test.c
       - runtime/tests/frame_clock_test.c
