@@ -81,6 +81,8 @@ static int tp_rear_default(void) { return settings_int("touchpad_rear_default", 
 /* a touchscreen's own fingers (screen_finger): the front panel where each touches the picture, the rear with RB held as it lands */
 enum { ST_FINGERS = 6 };
 static volatile int st_down[ST_FINGERS], st_port[ST_FINGERS], st_x[ST_FINGERS], st_y[ST_FINGERS]; static SDL_FingerID st_id[ST_FINGERS];
+/* Retain a streamed touchscreen tap until the game has sampled it once. */
+static volatile int st_sampled[ST_FINGERS], st_release_pending[ST_FINGERS];
 static volatile int cur_mode;              /* 0 off, 1 front (LB held), 2 rear (RB held) */
 static volatile int cur_down, cur_x[2] = {960, 960}, cur_y[2] = {544, (REAR_Y0 + REAR_Y1) / 2};
 /* Two cursors (two-finger gestures -- Killzone's valves): while a bumper is held, once BOTH sticks have moved the cursor
@@ -397,7 +399,12 @@ int window_touch_contacts(int port, int *keys, int *xs, int *ys, int max) {
 		else if (tp_aim_mode() && !tp_down[i] && tp_tap_port[i] == port && now_us() < tp_tap_until_us[i])
 			ADD(10 + i, tp_tap_x[i], tp_tap_y[i]);
 	}
-	for (int i = 0; i < ST_FINGERS; i++) if (st_down[i] && st_port[i] == port) ADD(20 + i, st_x[i], st_y[i]);   /* (a touchscreen's fingers: keys 20+) */
+for (int i = 0; i < ST_FINGERS; i++) if (st_down[i] && st_port[i] == port) {
+		ADD(20 + i, st_x[i], st_y[i]);
+		st_sampled[i] = 1;
+		/* Present a release that arrived before the first game sample. */
+		if (st_release_pending[i]) { st_down[i] = 0; st_release_pending[i] = 0; }
+	}
 	#undef ADD
 	if (n && port >= 0 && port < 2) last_touch_key[port] = keys[0];
 	return n;
@@ -413,7 +420,9 @@ static void gamepad_touch_release(void) {
 	cur2_on = 0; cur_used_l = cur_used_r = 0; cur_cross = cur_trig[0] = cur_trig[1] = 0; trig_touch[0] = trig_touch[1] = 0;
 	twist_pad = 0; twist_down = twist_drag;
 	mouse_rear_down = 0;
-	for (int i = 0; i < ST_FINGERS; i++) st_down[i] = 0;   /* (and the screen's fingers: the menu takes the screen) */
+	for (int i = 0; i < ST_FINGERS; i++) {
+		st_down[i] = st_sampled[i] = st_release_pending[i] = 0;
+	}   /* the menu takes the screen */
 }
 /* A touchscreen (SDL's direct touch devices: a laptop's or a handheld's screen; a trackpad's fingers stay the mouse, unless
  * RECOMP_TOUCH_ANY=1, which takes any touch device's, a Mac trackpad's included, as the screen's: a multi-touch test without a
@@ -445,12 +454,23 @@ static void screen_finger(const SDL_Event *e) {
 	int w = 0, h = 0; SDL_GetWindowSize(win, &w, &h);
 	const float mx = e->tfinger.x * (float)w, my = e->tfinger.y * (float)h;   /* (SDL's finger positions: 0-1 across the window) */
 	int k = -1, free_k = -1;
-	for (int i = 0; i < ST_FINGERS; i++) { if (st_down[i] && st_id[i] == e->tfinger.fingerID) k = i; else if (!st_down[i] && free_k < 0) free_k = i; }
-	if (e->type == SDL_EVENT_FINGER_UP || e->type == SDL_EVENT_FINGER_CANCELED) { if (k >= 0) st_down[k] = 0; return; }
+	for (int i = 0; i < ST_FINGERS; i++) {
+		if (st_down[i] && st_id[i] == e->tfinger.fingerID &&
+		    !(e->type == SDL_EVENT_FINGER_DOWN && st_release_pending[i])) k = i;
+		else if (!st_down[i] && free_k < 0) free_k = i;
+	}
+	if (e->type == SDL_EVENT_FINGER_UP || e->type == SDL_EVENT_FINGER_CANCELED) {
+		if (k >= 0) {
+			if (e->type == SDL_EVENT_FINGER_UP && !st_sampled[k]) st_release_pending[k] = 1;
+			else { st_down[k] = 0; st_release_pending[k] = 0; }
+		}
+		return;
+	}
 	int tx, ty;
 	if (k < 0) {   /* a new finger (a motion of one that landed on the bars is ignored) */
 		if (e->type != SDL_EVENT_FINGER_DOWN || free_k < 0 || !mouse_to_touch(mx, my, 0, &tx, &ty)) return;
 		k = free_k; st_id[k] = e->tfinger.fingerID; st_port[k] = rb_held;
+		st_sampled[k] = st_release_pending[k] = 0;
 	} else if (!mouse_to_touch(mx, my, 1, &tx, &ty)) return;
 	st_x[k] = tx; st_y[k] = st_port[k] ? clampi(ty, REAR_Y0, REAR_Y1) : ty;
 	st_down[k] = 1;
@@ -1076,7 +1096,9 @@ void window_run(void *(*fn)(void *), void *arg) {
 						int first = e.type == SDL_EVENT_GAMEPAD_TOUCHPAD_DOWN || !tp_down[f];
 						if (first) {
 							/* Shoulder modifier selects the opposite panel on landing. */
-							tp_port[f] = tp_rear_default() ? !rb_held : rb_held;
+							/* The pad's panel should agree with the active shoulder cursor,
+							 * including remapped shoulder buttons over streaming. */
+							tp_port[f] = cur_mode ? cur_mode - 1 : tp_rear_default();
 							tp_clicked[f] = tp_click_held; tp_moved[f] = 0;
 							tp_start_us[f] = now_us(); tp_tap_until_us[f] = 0;
 						}
