@@ -84,8 +84,22 @@ const char *settings_str(const char *key, const char *def, char *buf, int bufsiz
 	pthread_mutex_unlock(&mx);
 	return buf;
 }
-int settings_int(const char *key, int def) { char b[96]; if (!settings_has(key)) return def; return atoi(settings_str(key, "", b, sizeof b)); }
-double settings_float(const char *key, double def) { char b[96]; if (!settings_has(key)) return def; return atof(settings_str(key, "", b, sizeof b)); }
+/* Read and convert under a single lock. The former has+str sequence acquired
+ * the same mutex twice per query, including the frame-rate hot path. */
+int settings_int(const char *key, int def) {
+	pthread_mutex_lock(&mx);
+	int i = lookup(key);
+	int v = i >= 0 ? atoi(tab[i].val) : def;
+	pthread_mutex_unlock(&mx);
+	return v;
+}
+double settings_float(const char *key, double def) {
+	pthread_mutex_lock(&mx);
+	int i = lookup(key);
+	double v = i >= 0 ? atof(tab[i].val) : def;
+	pthread_mutex_unlock(&mx);
+	return v;
+}
 /* a shared key goes to the shared file and the game's override of it goes: a change made in any game's menu is made
  * for every game. The game's own options (and everything, with no shared file) stay in its own file. */
 void settings_set_str(const char *key, const char *v) {
