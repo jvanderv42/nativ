@@ -228,7 +228,7 @@ void gfx_gpu_sync_all(void);   /* every GPU render target written back to guest 
  * (shaders built: translate/msl/compile; pipelines created; textures uploaded) and its waits (target
  * downloads, readbacks, ring wraps), counts and microseconds. Zeros on the software backend. */
 typedef struct { uint32_t draws, fallback, shaders, pipes, tex_uploads, tex_new, tgt_downloads, readback_waits, ring_waits, flushes, shaders_cached, skipped;   /* skipped: draws waiting for an asynchronous shader/pipeline build (gfx_gpu.c's gpu_async) */
-	uint64_t t_total, t_shader, t_xlate, t_msl, t_compile, t_pipe, t_texup, t_tgt_download, t_readback_wait, t_ring_wait, t_vfetch, t_tsync, t_scene_sync, t_vfetch_max, t_map;
+	uint64_t t_total, t_shader, t_xlate, t_msl, t_compile, t_pipe, t_texup, t_up_decode, t_up_xfer, t_up_submit, t_tgt_download, t_readback_wait, t_ring_wait, t_vfetch, t_tsync, t_scene_sync, t_vfetch_max, t_map;
 	const char *fb_why[4]; uint32_t fb_n[4];   /* why the software-path draws went there (the first four reasons) */
 	uint32_t nshaders, npipes; } GfxGpuFrameCosts;   /* the shader and pipeline tables' sizes so far (each has a fixed capacity) */
 void gfx_gpu_last_frame_costs(GfxGpuFrameCosts *out);
