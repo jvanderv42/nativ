@@ -362,7 +362,8 @@ static void page_game(void) {
 	{ const int allowed = display_frame_rates_allowed(); int rates[3]; const int count = fr_list(allowed, rates);
 	  const int active = fr_effective(P.fr, allowed); int selected = 0;
 	  for (int i = 0; i < count; i++) if (rates[i] == active) selected = i;
-	  static const char *const labels[3] = {"30##fr", "60##fr", "120##fr"};
+	  const char *labels[3] = {};
+	  for (int i = 0; i < count; i++) labels[i] = rates[i] == 120 ? "120##fr" : rates[i] == 60 ? "60##fr" : "30##fr";
 	  if (ui::segmented(labels, count, &selected)) set_frame_rate(rates[selected]); }
 	if (game_option("fov")) {
 		ui::row("Field of view", "A wider view. 1.00× is the game's own.");
