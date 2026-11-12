@@ -15,6 +15,7 @@ on:
       - runtime/tests/frame_rates_test.c
       - launcher/hub.cpp
       - packs/PCSA00029/pack.toml
+      - packs/PCSA00107/pack.toml
 
 permissions:
   contents: read
