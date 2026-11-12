@@ -1392,12 +1392,40 @@ void window_run(void *(*fn)(void *), void *arg) {
 
 		if (!gpu) { SDL_Delay(1); continue; }
 		if (overlay_game_paused()) { extern void gfx_shader_prep_tick(void); gfx_shader_prep_tick(); }   /* (a paused game doesn't present: the shader warm-up steps on from here, its prep card's too) */
-		if (self_paced) {   /* no vsync wait paces this loop: a present once the game has a new frame, else once a refresh (menus, the overlay); spinning presented ~1200 times a second and slowed the game */
-			const SDL_DisplayMode *dm = SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(win));
-			const uint64_t period = (uint64_t)(1e6 / (dm && dm->refresh_rate > 1 ? dm->refresh_rate : 60.0f));
-			while (!__atomic_load_n(&gnew, __ATOMIC_ACQUIRE) && !__atomic_load_n(&new_frame, __ATOMIC_ACQUIRE) && now_us() - last_paced_us < period) SDL_DelayPrecise(250000);
-			last_paced_us = now_us();
-		}
+        /* RECOMP_WINDOW_FPS_CAP=60 is an opt-in experiment for streaming GPU-lock
+         * contention. The window normally presents at its monitor's refresh rate
+         * (120 Hz on the test PC), even when the game produces only 60 frames/s.
+         * Limit this *window loop* without changing the game's frame-rate target,
+         * SDL GPU locking, or swapchain mode. With no variable, old behavior is
+         * identical. The cap also avoids the early exit on a newly arrived frame
+         * that is intentional in the original self-paced path. */
+        static int window_fps_cap = -1;
+        static uint64_t capped_next_us;
+        if (window_fps_cap < 0) {
+            const char *cap_env = getenv("RECOMP_WINDOW_FPS_CAP");
+            window_fps_cap = cap_env && *cap_env ? atoi(cap_env) : 0;
+            if (window_fps_cap < 1 || window_fps_cap > 240) window_fps_cap = 0;
+            if (window_fps_cap) fprintf(stderr, "    window: diagnostic FPS cap %d (RECOMP_WINDOW_FPS_CAP)\n", window_fps_cap);
+        }
+        if (window_fps_cap) {
+            const uint64_t interval_us = 1000000ull / (uint64_t)window_fps_cap;
+            uint64_t current_us = now_us();
+            /* A missed deadline is discarded rather than scheduling catch-up
+             * presents, so a GPU stall cannot cause a burst of lock acquisitions. */
+            if (!capped_next_us || current_us > capped_next_us + interval_us)
+                capped_next_us = current_us;
+            while (current_us < capped_next_us) {
+                const uint64_t remain_us = capped_next_us - current_us;
+                SDL_DelayPrecise(remain_us > 1000 ? 500000 : remain_us * 1000);
+                current_us = now_us();
+            }
+            capped_next_us = current_us + interval_us;
+        } else if (self_paced) {   /* original mailbox pacing, unchanged with cap off */
+            const SDL_DisplayMode *dm = SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(win));
+            const uint64_t period = (uint64_t)(1e6 / (dm && dm->refresh_rate > 1 ? dm->refresh_rate : 60.0f));
+            while (!__atomic_load_n(&gnew, __ATOMIC_ACQUIRE) && !__atomic_load_n(&new_frame, __ATOMIC_ACQUIRE) && now_us() - last_paced_us < period) SDL_DelayPrecise(250000);
+            last_paced_us = now_us();
+        }
 		uint64_t t_blit0 = now_us();
         const int tracing = stream_trace_on();
         /* These accumulators belong exclusively to the window thread. */
