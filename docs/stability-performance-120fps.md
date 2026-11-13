@@ -142,3 +142,47 @@ $env:RECOMP_GPU_TEXTURE_TRACE_MS = '1'
 
 These environment variables must be set before launching Project Nativ.
 Close the launcher and game fully between A and B runs.
+
+## Touchpad cursor cadence diagnostic (post-distribution #16)
+
+`RECOMP_TOUCH_TRACE=1` enables **diagnostic-only** timing in the window/input
+thread. It does not change controller mappings, touch coordinates, gesture
+handling, gyro, or GPU pacing. While a shoulder cursor is active or a
+DualSense touchpad finger is down, the session log prints one `touch trace:`
+summary per second and a final summary on release:
+
+- `loop`: window input-loop iterations/s and worst loop gap.
+- `pad ev`, `motion`, `changed`: SDL touchpad input event frequency and
+  finger-0 coordinate changes; `gap` is the longest time between delivered
+  touchpad events.
+- `stick ev`, `cursor changes`: stick axis event frequency and visible
+  shoulder cursor coordinate changes.
+- `overlay frames`, `gap`: how often the touch overlay was drawn and its
+  largest interval while input was active.
+
+When a finger moves in large jumps but the game stays at 120 FPS:
+- Low `pad motion` and high `pad gap`, with `overlay frames` near 120:
+  investigate the Nightjar virtual controller, SDL delivery or event timing.
+- Frequent `pad motion`, but few `changed`: investigate incoming positions
+  and touch-coordinate processing.
+- Frequent events and coordinate changes, but low `overlay frames` or a
+  large overlay gap: investigate window pacing, GPU waits and overlay path.
+- The shoulder-stick cursor uses `stick ev` and `cursor changes`, not
+  `pad motion`; keep those distinct.
+
+Use a continuous drag for 10-15 seconds at least once when input behaves
+normally, and another during the intermittent choppy behavior. Don't use
+F5 during the movement because diagnostic capture can itself stall the game.
+Upload `session.log` afterward; the trace is opt-in and normally silent.
+
+```powershell
+$env:RECOMP_TOUCH_TRACE = "1"
+$env:RECOMP_HITCH_LOG = "18"
+$env:RECOMP_METRICS = "1"
+$env:RECOMP_STREAM_TRACE = "1"
+```
+
+The window/input thread is the timing reference, so low pad event frequency
+cannot on its own distinguish controller transport (Astra 2/Nightjar) from
+SDL's incoming event queue. Direct-connected controller comparison is a
+separate diagnostic step if required.
