@@ -186,3 +186,23 @@ The window/input thread is the timing reference, so low pad event frequency
 cannot on its own distinguish controller transport (Astra 2/Nightjar) from
 SDL's incoming event queue. Direct-connected controller comparison is a
 separate diagnostic step if required.
+
+## Active touch overlay cadence during cinematics (post-distribution #18)
+
+The window's frame-aware present loop previously displayed an unchanged game
+frame at 30 Hz whenever no new frame arrived, even when L1/R1's touch cursor
+or a DualSense touchpad finger was actively moving. Low-frame-rate cinematics
+could therefore make the visible cursor jump even while input was still being
+polled. The window now refreshes **active shoulder-cursor or touchpad markers**
+at the current display refresh rate (bounded to 240 Hz), independent of the
+game's frame-production rate. When touch is released, the existing 30 Hz idle
+and 60 Hz interactive-menu behavior returns. It does not change the game's
+frame clock, controller mappings, SDL touch events, or graphics synchronization.
+
+Testing: in a cinematic, hold L1/R1 and move the touchpad continuously,
+then repeat with normal gameplay. Verify smooth cursor motion and stable
+window/game performance. With `RECOMP_TOUCH_TRACE=1` enabled, compare the
+`overlay frames` and `pad events` fields: if input events are sparse while
+overlay presentation is smooth, investigate transport/event delivery rather
+than adding synthetic input smoothing. This change is not a confirmed fix
+until the affected Nightjar/Astra 2 setup is tested.
