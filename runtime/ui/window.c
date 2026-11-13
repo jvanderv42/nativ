@@ -96,6 +96,60 @@ static int trig_touch[2];            /* this trigger pressed a cursor touch: no 
 static volatile int mouse_rear_down, mouse_rear_x, mouse_rear_y;
 static int lb_held, rb_held, ltrig_on, rtrig_on;   /* the pair that holds the touch cursor; the pair that is L and R (pad_second, pad_main) */
 static int ptrig[2];                                /* the physical triggers past their press point (hysteresis) */
+/* RECOMP_TOUCH_TRACE=1: window-thread-only diagnostics for the streamed pad.
+ * Counts independent motion events, applied position changes, and displayed
+ * overlay frames. No rendering or input behavior is changed. */
+static int touch_trace_enabled(void) {
+	static int enabled = -1;
+	if (enabled < 0) { const char *e = getenv("RECOMP_TOUCH_TRACE"); enabled = e && *e && *e != '0'; }
+	return enabled;
+}
+static struct {
+	uint64_t start, prev_poll, prev_pad, prev_draw, max_poll_gap, max_pad_gap, max_draw_gap;
+	uint32_t pad_events, pad_moves, pad_changes, stick_events, cursor_changes, draws, loops;
+	int was_active, last_x, last_y, last_tp_x, last_tp_y;
+} touch_trace;
+static void touch_trace_poll(void) {
+	if (!touch_trace_enabled()) return;
+	uint64_t t = now_us();
+	int active_touch = cur_mode || touchpad_active();
+	/* Preserve the previous interval when a touch ends: one final report. */
+	if (!active_touch && !touch_trace.was_active && !touch_trace.start) return;
+	if (!touch_trace.start) {
+		touch_trace.start = t;
+		touch_trace.last_x = cur_mode ? cur_x[cur_mode - 1] : tp_x[0];
+		touch_trace.last_y = cur_mode ? cur_y[cur_mode - 1] : tp_y[0];
+		touch_trace.last_tp_x = tp_x[0]; touch_trace.last_tp_y = tp_y[0];
+	}
+	if (touch_trace.prev_poll && t - touch_trace.prev_poll > touch_trace.max_poll_gap)
+		touch_trace.max_poll_gap = t - touch_trace.prev_poll;
+	touch_trace.prev_poll = t;
+	touch_trace.loops++;
+	int x = cur_mode ? cur_x[cur_mode - 1] : tp_x[0], y = cur_mode ? cur_y[cur_mode - 1] : tp_y[0];
+	if (x != touch_trace.last_x || y != touch_trace.last_y) {
+		touch_trace.cursor_changes++; touch_trace.last_x = x; touch_trace.last_y = y;
+	}
+	if (t - touch_trace.start >= 1000000ull || (!active_touch && touch_trace.was_active)) {
+		double seconds = (t - touch_trace.start) / 1000000.0;
+		if (seconds < 0.001) seconds = 0.001;
+		fprintf(stderr, "    touch trace: active %d mode %d loop %.0f/s (gap %.1f ms), pad %u ev (%u motion, %u changed, gap %.1f ms), stick %u ev, cursor %u changes, overlay %u frames (gap %.1f ms)\n",
+			active_touch, cur_mode, touch_trace.loops / seconds, touch_trace.max_poll_gap / 1000.0,
+			touch_trace.pad_events, touch_trace.pad_moves, touch_trace.pad_changes, touch_trace.max_pad_gap / 1000.0,
+			touch_trace.stick_events, touch_trace.cursor_changes, touch_trace.draws, touch_trace.max_draw_gap / 1000.0);
+		/* Don't carry a gap across inactive periods into a later gesture. */
+		memset(&touch_trace, 0, sizeof touch_trace);
+		if (active_touch) { touch_trace.start = t; touch_trace.prev_poll = t; touch_trace.last_x = x; touch_trace.last_y = y; touch_trace.last_tp_x = tp_x[0]; touch_trace.last_tp_y = tp_y[0]; }
+	}
+	touch_trace.was_active = active_touch;
+}
+static void touch_trace_draw(void) {
+	if (!touch_trace_enabled() || !touch_trace.start) return;
+	uint64_t t = now_us();
+	if (touch_trace.prev_draw && t - touch_trace.prev_draw > touch_trace.max_draw_gap)
+		touch_trace.max_draw_gap = t - touch_trace.prev_draw;
+	touch_trace.prev_draw = t;
+	touch_trace.draws++;
+}
 /* "shoulder_buttons" (shared): "triggers", the default: the triggers are the game's L and R and the bumpers the other pair
  * (the touch cursor; a PS TV's L2/R2); "bumpers": the other way round, as a PS TV's own pad has it. Read with the bindings
  * (kb_reload: at start and as the menu closes, when nothing is held) */
@@ -994,6 +1048,7 @@ void window_run(void *(*fn)(void *), void *arg) {
 		SDL_Event e;
 		finger_script();
 		while (SDL_PollEvent(&e)) {
+			if (touch_trace_enabled() && touch_trace.start && e.type == SDL_EVENT_GAMEPAD_AXIS_MOTION && e.gaxis.axis < 4) touch_trace.stick_events++;
 			/* _exit, not SDL_Quit()+exit(): the game thread is still running and may be mid-call
 			 * into SDL (audio_output, window_present) or guest code; tearing down SDL subsystems
 			 * out from under it raced into a SIGSEGV at a null host function pointer. The OS
@@ -1109,6 +1164,12 @@ void window_run(void *(*fn)(void *), void *arg) {
 			if (e.type == SDL_EVENT_GAMEPAD_TOUCHPAD_DOWN || e.type == SDL_EVENT_GAMEPAD_TOUCHPAD_MOTION || e.type == SDL_EVENT_GAMEPAD_TOUCHPAD_UP) {
 				int f = e.gtouchpad.finger;
 				if (e.gtouchpad.touchpad == 0 && f >= 0 && f < TP_FINGERS) {
+					if (touch_trace_enabled()) {
+						uint64_t t = now_us();
+						if (touch_trace.prev_pad && t - touch_trace.prev_pad > touch_trace.max_pad_gap) touch_trace.max_pad_gap = t - touch_trace.prev_pad;
+						touch_trace.prev_pad = t; touch_trace.pad_events++;
+						if (e.type == SDL_EVENT_GAMEPAD_TOUCHPAD_MOTION) touch_trace.pad_moves++;
+					}
 					if (e.type == SDL_EVENT_GAMEPAD_TOUCHPAD_UP) {
 						/* A short stationary finger tap still touches the panel. */
 						if (tp_aim_mode() && tp_down[f] && !tp_clicked[f] && !tp_moved[f] &&
@@ -1137,6 +1198,7 @@ void window_run(void *(*fn)(void *), void *arg) {
 							if (dx * dx + dy * dy > 55 * 55) tp_moved[f] = 1;
 						}
 						tp_down[f] = 1;
+						if (touch_trace_enabled() && f == 0 && (tp_x[f] != touch_trace.last_tp_x || tp_y[f] != touch_trace.last_tp_y)) { touch_trace.pad_changes++; touch_trace.last_tp_x = tp_x[f]; touch_trace.last_tp_y = tp_y[f]; }
 					}
 				}
 			}
@@ -1401,6 +1463,7 @@ void window_run(void *(*fn)(void *), void *arg) {
 			}
 			was_open = open;
 		}
+		touch_trace_poll();
 		if (overlay_wants_quit()) { extern void host_summary(const char *why); extern void gfx_gpu_quit(void); host_summary("window closed"); gfx_gpu_quit(); _exit(0); }
 		if (overlay_wants_capture()) { extern void gfxcap_request(void); gfxcap_request(); fprintf(stderr, "capture requested (overlay)\n"); }
 
@@ -1599,6 +1662,7 @@ void window_run(void *(*fn)(void *), void *arg) {
 			for (int i = 0; i < ST_FINGERS; i++) rear_in_play |= st_down[i] && st_port[i];
 			if (rear_in_play) { float x0, y0, x1, y1; touch_to_point(0, REAR_Y0, &x0, &y0); touch_to_point(1920, REAR_Y1 + 1, &x1, &y1); rear[0] = x0; rear[1] = y0; rear[2] = x1 - x0; rear[3] = y1 - y0; }
 			overlay_marks(cmd, swap, ww, wh, dt, mk, nm, rear);
+			touch_trace_draw();
 		}
         if (tracing) trace_submit_start = now_us();
 		frame_fence[frame_fi] = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd); frame_fi = (frame_fi + 1) % 3;   /* vsync via the swapchain paces this loop; the fence is for the poll above, frames_in_flight on */
