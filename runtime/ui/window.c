@@ -99,6 +99,7 @@ static int ptrig[2];                                /* the physical triggers pas
 /* RECOMP_TOUCH_TRACE=1: window-thread-only diagnostics for the streamed pad.
  * Counts independent motion events, applied position changes, and displayed
  * overlay frames. No rendering or input behavior is changed. */
+static int touchpad_active(void);   /* defined below with the touch contacts */
 static int touch_trace_enabled(void) {
 	static int enabled = -1;
 	if (enabled < 0) { const char *e = getenv("RECOMP_TOUCH_TRACE"); enabled = e && *e && *e != '0'; }
