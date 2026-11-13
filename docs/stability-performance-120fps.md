@@ -187,6 +187,10 @@ cannot on its own distinguish controller transport (Astra 2/Nightjar) from
 SDL's incoming event queue. Direct-connected controller comparison is a
 separate diagnostic step if required.
 
+## Reverted: distribution #19 touch overlay cadence experiment
+
+Distribution #19's change to refresh held shoulder/touchpad overlays at display rate was **reverted** after user testing exposed severe FPS degradation with L1/R1 held and controller navigation failure in Vita system dialogs. The complete `runtime/ui/window.c` was restored to the exact pre-#19/#18 content in commit `c1af8e2669742d7e886bb5cbc56ab9edcc94420e` (blob `4e3c39be96c7117da3a14fa21d4468ead4ba62ab`). Do not treat the following historical experiment as current behavior. The #18 touch diagnostics and #16 performance changes remain.
+
 ## Active touch overlay cadence during cinematics (post-distribution #18)
 
 The window's frame-aware present loop previously displayed an unchanged game
