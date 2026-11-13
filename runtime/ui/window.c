@@ -1518,24 +1518,11 @@ void window_run(void *(*fn)(void *), void *arg) {
                 const int has_new_frame =
                     __atomic_load_n(&gnew, __ATOMIC_ACQUIRE) ||
                     __atomic_load_n(&new_frame, __ATOMIC_ACQUIRE);
-                /* A held shoulder cursor or a finger on the controller
-                 * touchpad must remain responsive even if a cinematic or
-                 * loading screen is delivering fewer game frames. Keep the
-                 * *window* overlay updating at the display refresh rate;
-                 * never change the game's frame clock or input mappings.
-                 * The normal 30 Hz idle / 60 Hz menu pacing is retained
-                 * when no touch is active. */
-                const int touch_active = cur_mode || touchpad_active();
-                uint64_t idle_period_us = (overlay_is_open() || overlay_dialog_active()) ? 16667ull : 33333ull;
-                if (touch_active) {
-                    const SDL_DisplayMode *dm = SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(win));
-                    float hz = dm && dm->refresh_rate > 1 ? dm->refresh_rate : 120.0f;
-                    if (hz > 240.0f) hz = 240.0f;
-                    idle_period_us = (uint64_t)(1000000.0 / hz);
-                }
-                /* No new game frame: poll SDL events until the next overlay
-                 * refresh, without taking GPU locks or accumulating catch-up
-                 * presents after a late frame. */
+                /* No new game image: continue servicing SDL events without
+                 * acquiring a GPU command buffer or the renderer mutex. */
+                /* Keep menus responsive at 60 Hz while retaining a 30 Hz
+                 * idle fallback when nothing interactive is displayed. */
+                const uint64_t idle_period_us = (overlay_is_open() || overlay_dialog_active()) ? 16667ull : 33333ull;
                 if (!has_new_frame && now - last_paced_us < idle_period_us) {
                     SDL_Delay(1);
                     continue;
