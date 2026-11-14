@@ -5,7 +5,7 @@
 <h1 align="center">Project Nativ Custom</h1>
 <p align="center"><strong>Play supported PS Vita games as native Windows applications, with improved controller touch input and smoother high-refresh-rate PC streaming.</strong></p>
 <p align="center">
-  An unofficial Windows-focused fork of <a href="https://github.com/TheLostPantheon/nativ">Project Nativ</a>, developed and tested with Uncharted: Golden Abyss, Killzone: Mercenary, DualShock 4 touch controls, and Android handheld streaming.
+  An unofficial Windows-focused fork of <a href="https://github.com/TheLostPantheon/nativ">Project Nativ</a>, developed and tested with Uncharted: Golden Abyss, Killzone: Mercenary, and DualShock 4 touch controls.
 </p>
 <p align="center">
   <a href="https://github.com/jvanderv42/nativ/releases"><img src="https://img.shields.io/badge/Download-Windows%20distribution-3cba91?style=for-the-badge&logo=windows&logoColor=white" alt="Download Windows distribution"></a>
@@ -17,7 +17,7 @@
   <a href="https://github.com/jvanderv42/nativ/actions"><img src="https://img.shields.io/badge/builds-GitHub%20Actions-2088ff" alt="GitHub Actions builds"></a>
 </p>
 
-> **The short version:** This fork packages a complete Windows Project Nativ environment and concentrates on practical gameplay improvements: more responsive PS Vita touch emulation using a PlayStation controller, improved touch input from an Android handheld, steadier frame presentation while streaming, and optional experimental 120 FPS operation. Download the current tested distribution from **[Releases](https://github.com/jvanderv42/nativ/releases)**.
+> **The short version:** This fork packages a complete Windows Project Nativ environment and concentrates on practical gameplay improvements: more responsive PS Vita touch emulation using a PlayStation controller, improved touch input, steadier frame presentation while streaming, and optional experimental 120 FPS operation. Download the current tested distribution from **[Releases](https://github.com/jvanderv42/nativ/releases)**.
 
 ## Why this fork exists
 
