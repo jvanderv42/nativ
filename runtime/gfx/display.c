@@ -7,6 +7,7 @@
  * input is the host window's (window.c) or nothing pressed.
  */
 #include <stdio.h>
+#include "touch_edge_rules.h"
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -823,7 +824,17 @@ static void h_ctrl_peek2(Cpu *c) { if (!pstv_port_ok(A0)) { RET(SCE_CTRL_ERROR_I
  * tracks), as the panels give each touch its own; not a fixed one: gesture.c follows a touch by its id and,
  * like the firmware, won't restart a DRAG for an id whose drag already ended -- with every touch
  * reported as id 1, Killzone: Mercenary's second drag would never have begun. */
-static void h_touch_peek(Cpu *c) {   /* (port, SceTouchData *, count) */
+/* Vita touch reports are sampled per vblank edge, not at the time of each API call.
+ * RECOMP_TOUCH_EDGE_SAMPLING=0 restores Distribution 20 behavior for A/B testing. */
+static int touch_edge_sampling(void) {
+	static int mode = -1;
+	if (mode < 0) { const char *e = getenv("RECOMP_TOUCH_EDGE_SAMPLING"); mode = !e || strcmp(e, "0"); }
+	return mode;
+}
+static uint64_t touch_edge_timestamp(uint64_t edge) {
+	return clock_fixed() || unpaced() ? (1ull << 32) + edge * 16667ull : vb_edge_time(edge);
+}
+static void touch_sample(Cpu *c, uint32_t nrep, int read, uint64_t edge) {   /* port, SceTouchData *, count */
 	/* the contacts on this panel now: the replay's, else the window's (mouse, gamepad touchpad, the
 	 * bumper cursor: window_touch_contacts), else the script's (front only, one). A contact keeps its
 	 * report id while held; each new one takes the next (one contact at a time -- every recorded and
@@ -885,18 +896,27 @@ static void h_touch_peek(Cpu *c) {   /* (port, SceTouchData *, count) */
 		for (int i = 0; i < n && o < (int)sizeof cur; i++) o += snprintf(cur + o, sizeof cur - (size_t)o, " %u@%d,%d", ids[i], xs[i], ys[i]);
 		if (strcmp(cur, last[port])) { fprintf(stderr, "    touch: frame %llu port %u: %s%s\n", (unsigned long long)frames, port, cur, played ? " (replay)" : ""); snprintf(last[port], sizeof last[port], "%s", cur); }
 	}
-	for (uint32_t i = 0; i < A2; i++) {
+	for (uint32_t i = 0; i < nrep; i++) {
 		uint32_t p = A1 + 0x90 * i;
-		memset(G(p), 0, 0x90); WR64(p, guest_time_us());
+		memset(G(p), 0, 0x90);
+		WR64(p, touch_edge_sampling() ? touch_edge_timestamp(read ? touch_edge_report(edge, nrep, i) : edge) : guest_time_us());
 		WR32(p + 12, (uint32_t)n);
 		for (int k = 0; k < n; k++) {
 			uint32_t r = p + 16 + 0x10 * (uint32_t)k;
 			WR8(r, ids[k]); WR8(r + 1, 128); WR16(r + 2, (uint16_t)xs[k]); WR16(r + 4, (uint16_t)ys[k]);
 		}
 	}
-	RET(A2);
+	RET(nrep);
 }
-static void h_touch_read(Cpu *c) { read_wait(&touch_read_edge[A0 & 1]); h_touch_peek(c); }
+static void h_touch_peek(Cpu *c) { touch_sample(c, A2, 0, vb_now()); }
+static void h_touch_read(Cpu *c) {
+	uint64_t *last = &touch_read_edge[A0 & 1];
+	const uint64_t previous = *last;
+	read_wait(last);
+	const uint64_t edge = vb_now();
+	const uint32_t reports = touch_edge_sampling() ? touch_edge_read_count(previous, edge, A2) : A2;
+	touch_sample(c, reports, 1, edge);
+}
 static void h_touch_panel_info(Cpu *c) {   /* front panel 0..1919 x 0..1087; back 0..1919 x 108..889 (its 1920x782 rows sit inside the front's range) */
 	memset(G(A1), 0, 0x30);
 	WR16(A1, 0); WR16(A1 + 2, A0 ? 108 : 0); WR16(A1 + 4, 1919); WR16(A1 + 6, A0 ? 889 : 1087);
