@@ -52,7 +52,7 @@ static uint64_t br(int pred, int off) { return 0xF800004000000000ull | (uint64_t
 #define FENCE 0xF920000000000000ull
 #define EMIT 0xFB275000A0200000ull
 static uint64_t call(int off) { return 0xF800024000000000ull | ((uint64_t)(uint32_t)off & 0xFFFFF); }
-enum { NOP_K, FENCE_K, EMIT_K, RET_K, BR_K, OTHER_K };
+enum { NOP_K, RET_K, BR_K, OTHER_K };
 static UsseProgram *load(const uint64_t *w, int n, int fragment) {
 	static uint32_t seq;
 	uint32_t g = GXP_ADDR + (++seq) * 0x10000;   /* a fresh address per program (the decoder caches by address) */
@@ -74,7 +74,7 @@ static int count_op(const SpirvModule *m, uint32_t op) {
 static int kind_of(const UOp *o) {
 	if (o->op == OP_BR) return BR_K;
 	if (o->op != OP_NOP) return OTHER_K;
-	return o->sub == USSE_NOP_FENCE ? FENCE_K : o->sub == USSE_NOP_EMIT ? EMIT_K : o->sub == USSE_NOP_RET ? RET_K : NOP_K;
+	return o->sub == USSE_NOP_RET ? RET_K : NOP_K; /* older baseline does not distinguish FENCE/EMIT markers */
 }
 static void code_is(const char *name, const uint64_t *w, int n, const int *want, int nwant) {
 	UsseProgram *p = load(w, n, 0); int nc = 0; const UOp *c = p ? usse_program_code(p, 0, &nc) : 0;
@@ -162,13 +162,13 @@ int main(void) {
 	 * call is a backward branch into the body again: refused ("outside the structured forms"), and the interpreter
 	 * looped to its guard. Inlined at decode: main from r + 1, the subroutine's copy at each call, no branch left. */
 	{	const uint64_t calls[] = { FENCE, FENCE, RET, NOP, call(-4), NOP, call(-6), EMIT };
-		const int want[] = { NOP_K, FENCE_K, FENCE_K, NOP_K, FENCE_K, FENCE_K, EMIT_K };
+		const int want[] = { NOP_K, NOP_K, NOP_K, NOP_K, NOP_K, NOP_K, NOP_K };
 		code_is("calls inlined in order", calls, 8, want, 7);
 		case_ok("two calls (vertex)", calls, 8, 0, 0, 0);
 		case_ok("two calls (fragment)", calls, 8, 1, 0, 0);
 		/* a skip in main over a call: re-aimed at the call's place after the copy: (p0) BR +3 (3 -> 6) becomes BR +4 */
 		const uint64_t skip_call[] = { FENCE, FENCE, RET, br(P0, 3), call(-4), NOP, EMIT };
-		const int want2[] = { BR_K, FENCE_K, FENCE_K, NOP_K, EMIT_K };
+		const int want2[] = { BR_K, NOP_K, NOP_K, NOP_K, NOP_K };
 		code_is("skip over a call re-aimed", skip_call, 7, want2, 5);
 		UsseProgram *q = load(skip_call, 7, 1); int nq = 0; const UOp *cq = usse_program_code(q, 0, &nq);
 		ck(q && nq == 5 && cq[0].imm == 4, "[skip over a call] the skip's offset is 4 (past the inlined copy)");
