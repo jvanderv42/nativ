@@ -302,7 +302,7 @@ void window_set_fullscreen(int on) {
 	if (win) SDL_SetWindowFullscreen(win, on != 0);
 	settings_set_int("fullscreen", on != 0); settings_save();
 }
-/* ---- adaptable aspect ratios (settings "aspect_ratio": native | 21:9 | 32:9 | window): the factor k the game's
+/* ---- adaptable aspect ratios (settings "aspect_ratio": native | 16:9 | 16:10 | 21:9 | 32:9 | window): the factor k the game's
  * horizontal view is widened by -- its camera hook (hooks.c, aspect_widen) builds the projection that
  * much wider into the same 960x544 frame, and the window shows that frame k times wider than native.
  * Only for a game whose conf declares such a hook (RECOMP_ASPECT_HOOK=1 in its RUN_ENV): without one the
@@ -314,7 +314,8 @@ float window_aspect_widen(void) {
 	static const char *env = (const char *)-1; if (env == (const char *)-1) env = getenv("RECOMP_ASPECT");   /* (read once: this runs per draw) */
 	char b[16]; if (env) snprintf(b, sizeof b, "%s", env); else settings_str("aspect_ratio", "native", b, sizeof b);   /* RECOMP_ASPECT wins (headless tests) */
 	const float native = 960.0f / 544.0f;
-	float a = !strcmp(b, "21:9") ? 21.0f / 9.0f : !strcmp(b, "32:9") ? 32.0f / 9.0f : 0;
+	float a = !strcmp(b, "16:9") ? 16.0f / 9.0f : !strcmp(b, "16:10") ? 16.0f / 10.0f :
+	          !strcmp(b, "21:9") ? 21.0f / 9.0f : !strcmp(b, "32:9") ? 32.0f / 9.0f : 0;
 	if (!strcmp(b, "window") && win_pw && win_ph) a = (float)win_pw / (float)win_ph;
 	float k = a > 0 ? a / native : 1.0f;
 	/* An opt-out keeps the old 16:9 letterboxing for narrow windows. For a 16:10
