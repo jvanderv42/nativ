@@ -79,7 +79,7 @@ void recomp_ihook_frames30(Cpu *c, int reg) {
 void widen_aspect_reg(Cpu *c, int reg) {   /* a register holding the 960/544 constant: widened by aspect_widen() */
 	if (reg < 0 || reg > 14 || c->r[reg] != 0x3fe1e1e2u) return;
 	double k = aspect_widen();
-	if (k <= 1.0) return;
+	if (k > 0.99999 && k < 1.00001) return;  /* both wider and narrower camera projections */
 	float a = (float)(960.0 / 544.0 * k); memcpy(&c->r[reg], &a, 4);
 }
 
