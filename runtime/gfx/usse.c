@@ -1582,7 +1582,7 @@ static UOp *inline_calls(UOp *ops, int *np) {
 	for (int i = 0; i < n; i++) if (ops[i].op == OP_BR && i + ops[i].imm == 0) {
 		int ret_before = 0; for (int k = 1; k < i; k++) if (ops[k].op == OP_NOP && ops[k].sub == USSE_NOP_RET) ret_before = 1;
 		if (!ret_before) continue;   /* a loop back to 0, not a call */
-		if (i < r || ops[i].pred_kind) { gap(GAP_USSE_OP, 0x1F00 | 0x82, "usse: subroutine call form not inlined (unsupported)"); return ops; }
+		if (i < r || ops[i].pred_kind) { fprintf(stderr, "usse: subroutine call form not inlined (unsupported)\n"); return ops; }
 		ncall++;
 	}
 	if (!ncall) return ops;
@@ -1608,7 +1608,7 @@ static UOp *inline_calls(UOp *ops, int *np) {
 		if (nt < 0) ok = 0; else out[k].imm = nt - k;
 	}
 	free(at); free(src); free(base);
-	if (!ok) { free(out); gap(GAP_USSE_OP, 0x1F00 | 0x83, "usse: branch across an inlined subroutine (unsupported)"); return ops; }
+	if (!ok) { free(out); fprintf(stderr, "usse: branch across an inlined subroutine (unsupported)\n"); return ops; }
 	free(ops); *np = nn;
 	return out;
 }
