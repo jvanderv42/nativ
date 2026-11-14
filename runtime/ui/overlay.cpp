@@ -285,12 +285,12 @@ static void page_display(void) {
 	}
 	ui::row("Picture fit", "How the picture fills the window.");
 	{ int am = window_get_aspect(); if (ui::segmented(g_aspect_names, 3, &am)) window_set_aspect(am); }
-	ui::row("Widescreen", window_aspect_supported() ? "Shows more of the game at the sides." : "This game has no widescreen support yet.");
-	{	static const char *const ids[4] = {"native", "21:9", "32:9", "window"}, *const names[4] = {"Off##ar", "21:9##ar", "32:9##ar", "Window##ar"};
+	ui::row("Widescreen", window_aspect_supported() ? "Choose a display shape; wider reveals more at the sides, narrower adapts the view." : "This game has no widescreen support yet.");
+	{	static const char *const ids[6] = {"native", "16:9", "16:10", "21:9", "32:9", "window"}, *const names[6] = {"Off##ar", "16:9##ar", "16:10##ar", "21:9##ar", "32:9##ar", "Window##ar"};
 		char cur[16]; settings_str("aspect_ratio", "native", cur, sizeof cur);
-		int v = 0; for (int i = 0; i < 4; i++) if (!strcmp(cur, ids[i])) v = i;
+		int v = 0; for (int i = 0; i < 6; i++) if (!strcmp(cur, ids[i])) v = i;
 		ImGui::BeginDisabled(!window_aspect_supported());
-		if (ui::segmented(names, 4, &v)) { settings_set_str("aspect_ratio", ids[v]); settings_save(); }
+		if (ui::segmented(names, 6, &v)) { settings_set_str("aspect_ratio", ids[v]); settings_save(); }
 		ImGui::EndDisabled();
 	}
 	if (gfx_gpu_hud_supported()) {
