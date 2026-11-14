@@ -19,6 +19,8 @@ on:
       - runtime/tests/target_scale_test.c
       - runtime/gfx/touch_edge_rules.h
       - runtime/tests/touch_edge_rules_test.c
+      - runtime/ui/aspect_factor.h
+      - runtime/tests/aspect_factor_test.c
       - runtime/core/hooks.c
       - runtime/tests/frame_rates_test.c
       - runtime/tests/frame_clock_test.c
@@ -84,6 +86,13 @@ jobs:
           set -euo pipefail
           cc -std=c11 -O2 -Wall -Wextra -Werror -Iruntime/gfx runtime/tests/touch_edge_rules_test.c -o "$RUNNER_TEMP/touch-edge-test"
           "$RUNNER_TEMP/touch-edge-test"
+
+      - name: Check narrow and wide aspect-ratio rules
+        shell: bash
+        run: |
+          set -euo pipefail
+          cc -std=c11 -O2 -Wall -Wextra -Werror -Iruntime/ui runtime/tests/aspect_factor_test.c -lm -o "$RUNNER_TEMP/aspect-factor-test"
+          "$RUNNER_TEMP/aspect-factor-test"
 
       - name: Check frame-rate timing rules
         shell: bash
