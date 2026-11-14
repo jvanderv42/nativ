@@ -7,7 +7,7 @@ This branch starts from the accepted Distribution 27 experimental branch, which 
 
 ### Aspect-ratio presets
 - The in-game F10 → Display → Widescreen selector now offers **Off, 16:9, 16:10, 21:9, 32:9 and Window**.
-- Explicit 16:9 and 16:10 modes change the camera/output aspect ratio, not just display stretching.
+- Explicit 16:9 and 16:10 modes change the camera/output aspect ratio, not just display stretching. The shared aspect-register hook and Uncharted camera projection now apply factors below 1.0 instead of silently ignoring them; this is essential for a correct 16:10 picture.
 - Note that the original Vita screen is 960×544 (30:17), close to but not exactly 16:9. Off retains native.
 
 ### Guest memory management
