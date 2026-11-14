@@ -301,7 +301,7 @@ void window_set_fullscreen(int on) {
 	if (win) SDL_SetWindowFullscreen(win, on != 0);
 	settings_set_int("fullscreen", on != 0); settings_save();
 }
-/* ---- wider aspect ratios (settings "aspect_ratio": native | 21:9 | 32:9 | window): the factor k the game's
+/* ---- adaptable aspect ratios (settings "aspect_ratio": native | 21:9 | 32:9 | window): the factor k the game's
  * horizontal view is widened by -- its camera hook (hooks.c, aspect_widen) builds the projection that
  * much wider into the same 960x544 frame, and the window shows that frame k times wider than native.
  * Only for a game whose conf declares such a hook (RECOMP_ASPECT_HOOK=1 in its RUN_ENV): without one the
@@ -316,7 +316,16 @@ float window_aspect_widen(void) {
 	float a = !strcmp(b, "21:9") ? 21.0f / 9.0f : !strcmp(b, "32:9") ? 32.0f / 9.0f : 0;
 	if (!strcmp(b, "window") && win_pw && win_ph) a = (float)win_pw / (float)win_ph;
 	float k = a > 0 ? a / native : 1.0f;
-	return k < 1.02f ? 1.0f : k > 2.5f ? 2.5f : k;   /* narrower than native: native (letterboxed as before) */
+	/* An opt-out keeps the old 16:9 letterboxing for narrow windows. For a 16:10
+	 * stream (e.g. Astra 2), the Uncharted camera hook must narrow its projection
+	 * together with the displayed frame. Test HUD and touch alignment carefully. */
+	static int allow_narrow = -1;
+	if (allow_narrow < 0) {
+		const char *e = getenv("RECOMP_ALLOW_NARROW_ASPECT");
+		allow_narrow = !e || strcmp(e, "0");
+	}
+	if (!allow_narrow && k < 1.02f) return 1.0f;
+	return k < 0.75f ? 0.75f : k > 2.5f ? 2.5f : k;
 }
 /* the visible source sub-rect (sx,sy,sw,sh: fit/stretch show it all; fill crops it, centred, to the
  * window's own aspect) and where it lands in the window (dx,dy,dw,dh) -- source and window sizes in
