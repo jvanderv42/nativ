@@ -3722,18 +3722,18 @@ static int no_view_size(uint32_t width, uint32_t height) {
 		if (e && sscanf(e, "%ux%u%c", &requested_w, &requested_h, &trailing) == 2 &&
 		    requested_w && requested_h && requested_w <= 16384 && requested_h <= 16384) {
 			enabled = 1;
-			fprintf(stderr, "    gpu: diagnostic render-target view bypass enabled for %ux%u\\n", requested_w, requested_h);
+			fprintf(stderr, "    gpu: diagnostic render-target view bypass enabled for %ux%u\n", requested_w, requested_h);
 		} else if (e && *e) {
-			fprintf(stderr, "    gpu: ignored invalid RECOMP_GPU_NO_VIEW_SIZE='%s' (expected WxH)\\n", e);
+			fprintf(stderr, "    gpu: ignored invalid RECOMP_GPU_NO_VIEW_SIZE='%s' (expected WxH)\n", e);
 		}
 	}
 	if (!enabled || width != requested_w || height != requested_h) return 0;
 	if (reported++ < 12)
-		fprintf(stderr, "    gpu: diagnostic bypassing %ux%u render-target view (match %u)\\n",
+		fprintf(stderr, "    gpu: diagnostic bypassing %ux%u render-target view (match %u)\n",
 		        width, height, reported);
 	return 1;
 }
-   /* RECOMP_GPU_NO_VIEWS=1: the guest-memory path for every render-target read (an A/B check) */
+
 /* which decode the view shader runs for a target's format read by a texture's base format (-1: none known); tex_bpp: the texture's bytes per texel */
 static int view_mode(uint32_t tgt_fmt, const GfxTexture *tex, uint32_t *tex_bpp, uint32_t swz[4]) {
 	uint32_t tb = tgt_fmt & 0xF1800000u, xb = tex->format & 0xff000000u, sw = (tex->format >> 12) & 7;
