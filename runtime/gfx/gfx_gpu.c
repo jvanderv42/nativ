@@ -3707,7 +3707,33 @@ static SDL_GPUGraphicsPipeline *view_pipeline_for(int from_depth, const ViewU *u
 #define MAXVIEW 32
 static TexEntry views[MAXVIEW]; static int nviews;
 static void views_release_samplers(void) { for (int i = 0; i < nviews; i++) tex_release_samplers(&views[i]); }
-static int no_views(void) { static int v = -1; if (v < 0) v = getenv("RECOMP_GPU_NO_VIEWS") != 0; return v; }   /* RECOMP_GPU_NO_VIEWS=1: the guest-memory path for every render-target read (an A/B check) */
+static int no_views(void) { static int v = -1; if (v < 0) v = getenv("RECOMP_GPU_NO_VIEWS") != 0; return v; }
+/* Diagnostic: bypass only views sourced from render targets of a specified size.
+ * RECOMP_GPU_NO_VIEW_SIZE=720x408 (or 360x204, 180x102). Disabled by default.
+ * The dimensions refer to the original Vita target, not the scaled host texture.
+ * Does not affect unrelated GPU views, direct exact-target sampling or game logic. */
+static int no_view_size(uint32_t width, uint32_t height) {
+	static int initialized, enabled;
+	static unsigned requested_w, requested_h, reported;
+	if (!initialized) {
+		initialized = 1;
+		const char *e = getenv("RECOMP_GPU_NO_VIEW_SIZE");
+		char trailing;
+		if (e && sscanf(e, "%ux%u%c", &requested_w, &requested_h, &trailing) == 2 &&
+		    requested_w && requested_h && requested_w <= 16384 && requested_h <= 16384) {
+			enabled = 1;
+			fprintf(stderr, "    gpu: diagnostic render-target view bypass enabled for %ux%u\\n", requested_w, requested_h);
+		} else if (e && *e) {
+			fprintf(stderr, "    gpu: ignored invalid RECOMP_GPU_NO_VIEW_SIZE='%s' (expected WxH)\\n", e);
+		}
+	}
+	if (!enabled || width != requested_w || height != requested_h) return 0;
+	if (reported++ < 12)
+		fprintf(stderr, "    gpu: diagnostic bypassing %ux%u render-target view (match %u)\\n",
+		        width, height, reported);
+	return 1;
+}
+   /* RECOMP_GPU_NO_VIEWS=1: the guest-memory path for every render-target read (an A/B check) */
 /* which decode the view shader runs for a target's format read by a texture's base format (-1: none known); tex_bpp: the texture's bytes per texel */
 static int view_mode(uint32_t tgt_fmt, const GfxTexture *tex, uint32_t *tex_bpp, uint32_t swz[4]) {
 	uint32_t tb = tgt_fmt & 0xF1800000u, xb = tex->format & 0xff000000u, sw = (tex->format >> 12) & 7;
@@ -3893,12 +3919,17 @@ static TexEntry *target_view(const GfxTexture *tex, TargetEntry **exact) {
 	}
 	const int snap2 = snap && scene_snap == 2 && best == scene_entry && best->snap && !dbest;   /* the starting pixels in the GPU snapshot */
 	if (snap && !snap2) { if (scene_snap == 2) snap_to_guest(scene_entry); goto guest; }
-	if (best && !dbest && gfx_texture_levels(tex) > 1 && !no_views()) { TexEntry *mv = mip_view(tex, best, snap2 ? best->snap : 0, snap2 ? best->snap_gen : 0); if (mv) return mv; }   /* every level a GPU target (the transfer chain's) */
+	/* Target-selective bypass applies to both mip-chain views and ordinary colour/depth views.
+	 * Select the newest eligible source, as the normal view path does. */
+	const int selective_no_view = dbest && (!best || dbest->gen > best->gen)
+		? no_view_size(dbest->w, dbest->h)
+		: best ? no_view_size(best->width, best->height) : 0;
+	if (best && !dbest && gfx_texture_levels(tex) > 1 && !no_views() && !selective_no_view) { TexEntry *mv = mip_view(tex, best, snap2 ? best->snap : 0, snap2 ? best->snap_gen : 0); if (mv) return mv; }   /* every level a GPU target (the transfer chain's) */
 	if (ex && !snap2 && (!dbest || best->gen > dbest->gen) && !getenv("RECOMP_GPU_DEBUG_NO_RTT")) {
 		if (best == scene_entry) batch_flush("scene target sampled");   /* sampled while it is the attachment (undefined either way): at least after the draws before it */
 		*exact = best; return 0;
 	}
-	if (!no_views()) {
+	if (!no_views() && !selective_no_view) {
 		ViewU u; TexEntry *v = 0;
 		if (dbest && (!best || dbest->gen > best->gen)) {   /* the depth surface's content is the newest over this memory */
 			for (int k = 0; k < 4; k++) u.swz[k] = (uint32_t)k;
