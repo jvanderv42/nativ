@@ -36,7 +36,10 @@ static inline int target_scale_of(const TargetScaleRule *r, int n, uint32_t w, u
 	for (int k = 0; k < n; k++) if (r[k].f == 0.0f && r[k].w == w && r[k].h == h) { x = (rx + rs - 1) / rs; y = 1; hit = k; break; }
 	if (hit < 0 && full_res) for (int k = 0; k < n; k++) if (r[k].f > 0.0f && r[k].w == w && r[k].h == h) {
 		int a = (int)((float)rx * r[k].f + 0.5f), b = (int)((float)rs * r[k].f + 0.5f);
-		if (a > x) x = a; if (b > y) y = b; hit = k; break;
+		if (a > x) x = a;
+		if (b > y) y = b;
+		hit = k;
+		break;
 	}
 	*sx = (uint8_t)(x > 8 ? 8 : x); *sy = (uint8_t)(y > 8 ? 8 : y);
 	return hit;
