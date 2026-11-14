@@ -17,7 +17,7 @@
   <a href="https://github.com/jvanderv42/nativ/actions"><img src="https://img.shields.io/badge/builds-GitHub%20Actions-2088ff" alt="GitHub Actions builds"></a>
 </p>
 
-> **The short version:** This fork packages a complete Windows Project Nativ environment and concentrates on practical gameplay improvements: more responsive PS Vita touch emulation using a PlayStation controller, improved touch input from an Android handheld, steadier frame presentation while streaming, and optional experimental 120 FPS operation. Download the current tested distribution from **[Releases](https://github.com/jvanderv42/nativ/releases)**—the link intentionally does not point to a specific version.
+> **The short version:** This fork packages a complete Windows Project Nativ environment and concentrates on practical gameplay improvements: more responsive PS Vita touch emulation using a PlayStation controller, improved touch input from an Android handheld, steadier frame presentation while streaming, and optional experimental 120 FPS operation. Download the current tested distribution from **[Releases](https://github.com/jvanderv42/nativ/releases)**.
 
 ## Why this fork exists
 
