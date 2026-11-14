@@ -17,6 +17,8 @@ on:
       - runtime/gfx/gfx_gpu.c
       - runtime/gfx/target_scale.h
       - runtime/tests/target_scale_test.c
+      - runtime/gfx/touch_edge_rules.h
+      - runtime/tests/touch_edge_rules_test.c
       - runtime/core/hooks.c
       - runtime/tests/frame_rates_test.c
       - runtime/tests/frame_clock_test.c
@@ -75,6 +77,13 @@ jobs:
           set -euo pipefail
           cc -std=c11 -O2 -Wall -Wextra -Werror -Iruntime/gfx runtime/tests/target_scale_test.c -o "$RUNNER_TEMP/target-scale-test"
           "$RUNNER_TEMP/target-scale-test"
+
+      - name: Check touch sample edge accounting
+        shell: bash
+        run: |
+          set -euo pipefail
+          cc -std=c11 -O2 -Wall -Wextra -Werror -Iruntime/gfx runtime/tests/touch_edge_rules_test.c -o "$RUNNER_TEMP/touch-edge-test"
+          "$RUNNER_TEMP/touch-edge-test"
 
       - name: Check frame-rate timing rules
         shell: bash
