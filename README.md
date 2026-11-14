@@ -106,7 +106,7 @@ For a detailed explanation, see [Architecture](docs/architecture.md), [Runtime](
 
 ## Stable releases, source and development
 
-The current user-accepted baseline is the published **Distribution 20** release, based on source commit `c1af8e2669742d7e886bb5cbc56ab9edcc94420e`. It restores the earlier UI/input implementation after a subsequent experimental change caused regressions. The underlying runtime and game source is not rebuilt merely by publishing a release.
+The current baseline is the published **Distribution 20** release, based on source commit `c1af8e2669742d7e886bb5cbc56ab9edcc94420e`. It restores the earlier UI/input implementation after a subsequent experimental change caused regressions. The underlying runtime and game source is not rebuilt merely by publishing a release.
 
 **For future downloads always use [Releases](https://github.com/jvanderv42/nativ/releases)** rather than a hard-coded version URL. Release numbers and build filenames can change without requiring a README edit.
 
