@@ -32,6 +32,7 @@
 #include "gpulock.h"   /* every SDL submit/fence call below is the locked one: Homebrew SDL 3.4.16's Metal fence race, see that header */
 #include <pthread.h>
 #include <stdio.h>
+#include "aspect_factor.h"
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -324,8 +325,7 @@ float window_aspect_widen(void) {
 		const char *e = getenv("RECOMP_ALLOW_NARROW_ASPECT");
 		allow_narrow = !e || strcmp(e, "0");
 	}
-	if (!allow_narrow && k < 1.02f) return 1.0f;
-	return k < 0.75f ? 0.75f : k > 2.5f ? 2.5f : k;
+	return nativ_aspect_factor(k, allow_narrow);
 }
 /* the visible source sub-rect (sx,sy,sw,sh: fit/stretch show it all; fill crops it, centred, to the
  * window's own aspect) and where it lands in the window (dx,dy,dw,dh) -- source and window sizes in
