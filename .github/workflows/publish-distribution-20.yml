@@ -1,0 +1,62 @@
+name: Publish Project Nativ Distribution 20
+
+on:
+  push:
+    paths:
+      - '.github/workflows/publish-distribution-20.yml'
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download the verified Distribution 20 artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          gh run download 43447572947 --repo "${{ github.repository }}" --name nativ-windows-distribution-20 --dir dist
+          test -s dist/nativ-windows-distribution-20.zip
+          ls -lh dist/nativ-windows-distribution-20.zip
+
+      - name: Publish v0.1.5-custom.3 from the original source commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cat > release-notes.md <<'NOTES'
+          # Project Nativ v0.1.5-custom.3 — Distribution 20
+
+          This is the user-accepted stable baseline of the custom Windows Project Nativ fork.
+
+          **Distribution 20** rolls back the problematic UI/input changes introduced in Distribution 19, restoring `runtime/ui/window.c` to its Distribution 18 implementation. Earlier touchpad, touchscreen, and frame-presentation improvements remain included.
+
+          ### Features
+          - DualShock 4/DualSense touchpad support and Vita front/rear touch emulation
+          - L1/R1 touch-mode modifier behavior
+          - Astra 2 touchscreen responsiveness improvements
+          - Improved touchpad tapping, dragging, and releasing
+          - Frame-aware presentation for local and Nightjar-streamed gameplay
+          - Experimental 120 FPS support (game-dependent)
+
+          ### Installation
+          1. Download and extract `nativ-windows-distribution-20.zip` into its own folder.
+          2. Run `Project Nativ.exe` from the extracted distribution.
+          3. Recompile any games that need to incorporate the updated runtime.
+          4. Keep a backup of your previous working distribution and compiled games.
+
+          **Build source commit:** `c1af8e2669742d7e886bb5cbc56ab9edcc94420e`
+          **Original Actions run:** [43447572947](https://github.com/jvanderv42/nativ/actions/runs/43447572947)
+
+          This is an unofficial community fork, not an upstream Project Nativ release.
+          NOTES
+          gh release create v0.1.5-custom.3 dist/nativ-windows-distribution-20.zip \
+            --repo "${{ github.repository }}" \
+            --target c1af8e2669742d7e886bb5cbc56ab9edcc94420e \
+            --title "Project Nativ v0.1.5-custom.3 — Stable Distribution 20" \
+            --notes-file release-notes.md \
+            --latest
