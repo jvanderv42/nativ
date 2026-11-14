@@ -20,7 +20,14 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           gh run download 43447572947 --repo "${{ github.repository }}" --name nativ-windows-distribution-20 --dir dist
-          test -s dist/nativ-windows-distribution-20.zip
+          # The original build artifact contains a candidate-named ZIP, not a distribution-named ZIP.
+          shopt -s nullglob
+          archives=(dist/ProjectNativ-windows-candidate-*.zip)
+          test "${#archives[@]}" -eq 1
+          test -s "${archives[0]}"
+          (cd dist && sha256sum --check SHA256SUMS.txt)
+          mv "${archives[0]}" dist/nativ-windows-distribution-20.zip
+          (cd dist && sha256sum nativ-windows-distribution-20.zip > SHA256SUMS-release.txt)
           ls -lh dist/nativ-windows-distribution-20.zip
 
       - name: Publish v0.1.5-custom.3 from the original source commit
@@ -54,7 +61,7 @@ jobs:
 
           This is an unofficial community fork, not an upstream Project Nativ release.
           NOTES
-          gh release create v0.1.5-custom.3 dist/nativ-windows-distribution-20.zip \
+          gh release create v0.1.5-custom.3 dist/nativ-windows-distribution-20.zip dist/SHA256SUMS-release.txt dist/BUILD-INFO.txt \
             --repo "${{ github.repository }}" \
             --target c1af8e2669742d7e886bb5cbc56ab9edcc94420e \
             --title "Project Nativ v0.1.5-custom.3 — Stable Distribution 20" \
