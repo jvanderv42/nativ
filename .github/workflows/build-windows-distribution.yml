@@ -7,6 +7,7 @@ on:
       - feature/controller-touchpad-controls
       - experimental/120fps
       - experiment/luufen-selective-20261114
+      - experiment/memory-graphics-aspect-20261114
       - improvement/stability-performance-120fps
     paths:
       - .github/workflows/build-windows-distribution.yml
@@ -15,6 +16,13 @@ on:
       - runtime/gfx/display.c
       - runtime/gfx/gfx.h
       - runtime/gfx/gfx_gpu.c
+      - runtime/core/sysmem.c
+      - runtime/core/memblock_holes.h
+      - runtime/core/memblock_budget.h
+      - runtime/gfx/usse.c
+      - runtime/gfx/usse_internal.h
+      - runtime/tests/memblock_budget_test.c
+      - runtime/tests/usse_cf_test.c
       - runtime/gfx/target_scale.h
       - runtime/tests/target_scale_test.c
       - runtime/gfx/touch_edge_rules.h
@@ -93,6 +101,20 @@ jobs:
           set -euo pipefail
           cc -std=c11 -O2 -Wall -Wextra -Werror -Iruntime/ui runtime/tests/aspect_factor_test.c -lm -o "$RUNNER_TEMP/aspect-factor-test"
           "$RUNNER_TEMP/aspect-factor-test"
+
+      - name: Check aligned guest memory reuse and Vita budget rules
+        shell: bash
+        run: |
+          set -euo pipefail
+          cc -std=c11 -O2 -Wall -Wextra -Iruntime/core runtime/tests/memblock_budget_test.c -o "$RUNNER_TEMP/memblock-test"
+          "$RUNNER_TEMP/memblock-test"
+
+      - name: Check shader subroutine control flow
+        shell: bash
+        run: |
+          set -euo pipefail
+          cc -O1 -g -Wall -D_GNU_SOURCE -Iruntime/gfx -Iruntime/core -Irecompiler -I. runtime/tests/usse_cf_test.c runtime/gfx/usse.c runtime/gfx/usse_spirv.c -o "$RUNNER_TEMP/usse-cf-test" -lm
+          "$RUNNER_TEMP/usse-cf-test"
 
       - name: Check frame-rate timing rules
         shell: bash
