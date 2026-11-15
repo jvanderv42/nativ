@@ -5612,6 +5612,22 @@ void gfx_gpu_draw(const GfxDraw *d) {
 			if (tx->data >= te->addr && tx->data < te->addr + bpp * te->width * te->height && bpp != tb) { snap_mask |= 1u << i; break; }
 		}
 	}
+	/* Experimental Uncharted DOF: this GXP content hash was validated from
+	 * the before/after captures. Bit 16 is a module-variant flag, not a texture
+	 * unit: the shader key incorporates it so enhanced and original code never
+	 * share the same cached shader or pipeline. Disabled unless explicitly set.
+	 * Other shaders and games retain their original path. */
+	if (fp && usse_program_hash(fp) == 0xb8a9cc91u) {
+		static int enhanced = -1, reported;
+		if (enhanced < 0) {
+			const char *value = getenv("RECOMP_UC_ENHANCED_DOF");
+			enhanced = value && !strcmp(value, "1");
+		}
+		if (enhanced) {
+			snap_mask |= 1u << 16;
+			if (!reported++) fprintf(stderr, "    gpu: experimental Uncharted Enhanced DOF active for shader %#x\n", d->fprog);
+		}
+	}
 	VfPlan plan; vf_plan(d, vl, usse_program_pa_words(vp), &plan);   /* the vertex data path (above) picks the vertex shader variant */
 	ShaderEntry *vs = get_shader(d->vprog, vp, 0, vl, 0, vsa_for_smp, -1, vcube_mask, 0, plan.gpu ? &plan.vf : 0, plan.hash);
 	if (plan.gpu && (!vs || (!shader_pending(vs) && !vs->ok))) { plan.gpu = 0; vs = get_shader(d->vprog, vp, 0, vl, 0, vsa_for_smp, -1, vcube_mask, 0, 0, 0); }   /* (a layout the fetch prologue refused: the packer's variant, as before) */
