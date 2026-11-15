@@ -428,7 +428,7 @@ static void sfx_trace_note(Voice *v, const char *event, uint32_t caller) {
     int next = pp ? (int16_t)RD16(pp + off + 10) : -1;
     uint64_t now = vo_us();
     if (!sfx_trace_origin) sfx_trace_origin = now;
-    fprintf(stderr, "    sfx: t_ms=%llu frame=%llu upd=%llu voice=%d seq=%u def=%u handle=%#x event=%s lr=%#x active=%d paused=%d release=%d rel_ms=%.1f elapsed_ms=%llu buf=%u pos=%u data=%#x bytes=%u loops=%d next=%d loops_seen=%u samples=%u hash=%08x\\n",
+    fprintf(stderr, "    sfx: t_ms=%llu frame=%llu upd=%llu voice=%d seq=%u def=%u handle=%#x event=%s lr=%#x active=%d paused=%d release=%d rel_ms=%.1f elapsed_ms=%llu buf=%u pos=%u data=%#x bytes=%u loops=%d next=%d loops_seen=%u samples=%u hash=%08x\n",
         (unsigned long long)((now - sfx_trace_origin) / 1000),
         (unsigned long long)display_frames(), (unsigned long long)updates,
         i, sfx_trace_sequence[i], v->def, v->handle, event, caller,
@@ -449,7 +449,7 @@ static void sfx_trace_play(Voice *v, uint32_t caller) {
     if (!pp) return;
     for (int b = 0; b < 4; b++) {
         uint32_t off = at9 ? A_BUF(b) : P_BUF(b);
-        fprintf(stderr, "    sfx: voice=%d seq=%u buffer=%d addr=%#x bytes=%u loops=%d next=%d\\n",
+        fprintf(stderr, "    sfx: voice=%d seq=%u buffer=%d addr=%#x bytes=%u loops=%d next=%d\n",
             i, sfx_trace_sequence[i], b, RD32(pp + off), RD32(pp + off + 4),
             (int16_t)RD16(pp + off + 8), (int16_t)RD16(pp + off + 10));
     }
