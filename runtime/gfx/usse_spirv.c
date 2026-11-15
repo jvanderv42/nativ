@@ -1042,7 +1042,9 @@ void usse_spirv_key(const UsseProgram *prog, const UsseFragLayout *fl, const uin
 	}
 	if (fl) for (int i = 0; i < fl->niters; i++) if (fl->iters[i].is_tex && fl->iters[i].tex_unit >= 0 && fl->iters[i].tex_unit < 16) used |= 1u << fl->iters[i].tex_unit;
 	if (cube_mask) *cube_mask &= used;
-	if (snap_mask) *snap_mask &= used;
+	/* Bit 16 is reserved for the opt-in Uncharted DOF reconstruction variant.
+	 * Preserve it in the shader key (normal texture-unit masks use bits 0..15). */
+	if (snap_mask) *snap_mask &= used | (1u << 16);
 	if (color_kind && *color_kind >= 0) *color_kind = fl && (fl->color_type == TY_U32 || fl->color_type == TY_S32) && (*color_kind == 1 || *color_kind == 2) ? *color_kind : 0;   /* (emit_frag_epilogue: raw words by kind 1, 2, else bytes) */
 }
 uint32_t usse_spirv_predict_cube(const UsseProgram *prog, const UsseFragLayout *fl, const uint32_t sa_tex_unit[256]) {
@@ -1518,6 +1520,29 @@ static void canon_nondep_coord(Gen *g, const UsseIter *it, int cube, uint32_t *u
 		*u = fsel(g, div, fop2(s, SpvOpFDiv, *u, w), *u); *v = fsel(g, div, fop2(s, SpvOpFDiv, *v, w), *v);
 	}
 }
+/* Optional, shader-specific reconstruction of Uncharted's 180x102 DOF input.
+ * A five-tap cross Gaussian smooths the coarse source while retaining its
+ * original bilinear sampler and colour/alpha channels. This is deliberately
+ * a mild quality prototype, NOT a claim to correct original Vita DOF.
+ * Enabled only in the dedicated shader variant (snap_mask bit 16).
+ * The offset is one original effect texel, independent of world render scale.
+ * A separate shader key prevents mixing original and enhanced cache entries. */
+static uint32_t uc_dof_reconstruct(Gen *g, int slot, int unit, uint32_t u, uint32_t v, uint32_t center) {
+	Spv *s = &g->s;
+	uint32_t tv4 = t_vec(s, t_float(s), 4);
+	uint32_t total = result2(s, &s->func, 142 /* OpVectorTimesScalar */, tv4, center, c_float(s, 0.5f));
+	const float dx = 1.0f / 180.0f, dy = 1.0f / 102.0f;
+	const float shifts[4][2] = {{dx, 0}, {-dx, 0}, {0, dy}, {0, -dy}};
+	for (int i = 0; i < 4; i++) {
+		uint32_t su = fop2(s, SpvOpFAdd, u, c_float(s, shifts[i][0]));
+		uint32_t sv = fop2(s, SpvOpFAdd, v, c_float(s, shifts[i][1]));
+		uint32_t uv = result2(s, &s->func, SpvOpCompositeConstruct, t_vec(s, t_float(s), 2), su, sv);
+		uint32_t tap = sample_lod(g, slot, unit, uv, 0, 0, 0);
+		uint32_t weighted = result2(s, &s->func, 142 /* OpVectorTimesScalar */, tv4, tap, c_float(s, 0.125f));
+		total = result2(s, &s->func, SpvOpFAdd, tv4, total, weighted);
+	}
+	return total;
+}
 static void emit_sample_nondep(Gen *g, const UsseIter *it, const uint32_t sa_tex_unit[256], int *ok) {
 	Spv *s = &g->s; (void)sa_tex_unit;   /* non-dependent iterator sampling: the unit comes straight from fl->iters[].tex_unit, no SA lookup needed */
 	const int canon = canon_vary && !(it->point_coord && g->var_point) && it->tex_coord_src >= 0 && it->tex_coord_src < 10;
@@ -1550,8 +1575,13 @@ static void emit_sample_nondep(Gen *g, const UsseIter *it, const uint32_t sa_tex
 		if (base >= 0 && it->tex_proj >= 2 && g->vl->ncomp_tex[it->tex_coord_src] > 2) { u = read_vary_comp(g, base, ok); v = read_vary_comp(g, base + 1, ok); }
 		coord = cube_coord(g, u, v, w3, grad);
 	} else coord = result2(s, &s->func, SpvOpCompositeConstruct, t_vec(s, t_float(s), 2), u, v);
-	uint32_t texel = srgb_fixup(g, it->tex_unit, (g->snap_mask >> (it->tex_unit & 15) & 1) && !slot_is_cube(g, slot) ? snap_fetch(g, slot, it->tex_unit, u, v)
-	                                               : sample_lod(g, slot, it->tex_unit, coord, 0, 0, grad));
+	uint32_t texel = (g->snap_mask >> (it->tex_unit & 15) & 1) && !slot_is_cube(g, slot) ? snap_fetch(g, slot, it->tex_unit, u, v)
+	                : sample_lod(g, slot, it->tex_unit, coord, 0, 0, grad);
+	/* The shader hash gates the bit-16 variant; the actual input must be unit 9.
+	 * Do this before the existing sRGB conversion to match normal sampling. */
+	if ((g->snap_mask & (1u << 16)) && it->tex_unit == 9 && !slot_is_cube(g, slot))
+		texel = uc_dof_reconstruct(g, slot, it->tex_unit, u, v, texel);
+	texel = srgb_fixup(g, it->tex_unit, texel);
 	for (int c = 0; c < 4; c++) write_comp_f(g, &dst, 0, c, composite_extract1(s, t_float(s), texel, (uint32_t)c), ok);
 }
 /* fragment-shader prologue: pack every iterator (usse_fragment_layout) into PA exactly like
