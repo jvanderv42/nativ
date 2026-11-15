@@ -1042,7 +1042,9 @@ void usse_spirv_key(const UsseProgram *prog, const UsseFragLayout *fl, const uin
 	}
 	if (fl) for (int i = 0; i < fl->niters; i++) if (fl->iters[i].is_tex && fl->iters[i].tex_unit >= 0 && fl->iters[i].tex_unit < 16) used |= 1u << fl->iters[i].tex_unit;
 	if (cube_mask) *cube_mask &= used;
-	if (snap_mask) *snap_mask &= used;
+	/* Bit 16 selects the opt-in Uncharted depth-guided DOF variant.
+	 * Bits 0..15 retain their existing per-sampler snap semantics. */
+	if (snap_mask) *snap_mask &= used | (1u << 16);
 	if (color_kind && *color_kind >= 0) *color_kind = fl && (fl->color_type == TY_U32 || fl->color_type == TY_S32) && (*color_kind == 1 || *color_kind == 2) ? *color_kind : 0;   /* (emit_frag_epilogue: raw words by kind 1, 2, else bytes) */
 }
 uint32_t usse_spirv_predict_cube(const UsseProgram *prog, const UsseFragLayout *fl, const uint32_t sa_tex_unit[256]) {
@@ -1518,6 +1520,69 @@ static void canon_nondep_coord(Gen *g, const UsseIter *it, int cube, uint32_t *u
 		*u = fsel(g, div, fop2(s, SpvOpFDiv, *u, w), *u); *v = fsel(g, div, fop2(s, SpvOpFDiv, *v, w), *v);
 	}
 }
+/* Experimental Uncharted DOF: depth-guided reconstruction of unit 9.
+ * The original shader, g_vDofParams and its final sharp/blurred mix are left
+ * untouched. Instead, the four nearest quarter-resolution blur texels are
+ * weighted by their bilinear footprint AND their compatibility with the
+ * full-resolution scene's W channel (unit 10). Captured unit 10 has smooth
+ * W values within surfaces and large jumps at geometry discontinuities.
+ *
+ * This is a candidate reconstruction, not a decoded circle-of-confusion
+ * formula. The 20% original-bilinear contribution limits the intervention.
+ * The target is deliberately restricted by the caller to the captured GXP.
+ */
+static uint32_t uc_depth_guided_blur(Gen *g, int blur_slot, uint32_t u, uint32_t v, uint32_t original) {
+	Spv *s = &g->s; uint32_t tf = t_float(s), tv2 = t_vec(s, tf, 2), tv4 = t_vec(s, tf, 4);
+	int depth_slot = sampler_slot(g, 10);
+	if (depth_slot < 0 || slot_is_cube(g, depth_slot)) return original;
+	uint32_t center_coord = result2(s, &s->func, SpvOpCompositeConstruct, tv2, u, v);
+	uint32_t center_world = sample_lod(g, depth_slot, 10, center_coord, 0, 0, 0);
+	uint32_t center_w = composite_extract1(s, tf, center_world, 3);
+	uint32_t xy[2] = {u,v};
+	const float dims[2] = {180.0f, 102.0f};
+	uint32_t low[2], fract[2];
+	for (int c = 0; c < 2; c++) {
+		uint32_t x = fop2(s, SpvOpFSub, fop2(s, SpvOpFMul, xy[c], c_float(s, dims[c])), c_float(s, 0.5f));
+		low[c] = glsl1(s, GLSLFloor, x);
+		fract[c] = fop2(s, SpvOpFSub, x, low[c]);
+	}
+	uint32_t total = c_float(s, 0.0f), accum[4] = {0};
+	for (int y = 0; y < 2; y++) for (int x = 0; x < 2; x++) {
+		uint32_t xyuv[2];
+		for (int c = 0; c < 2; c++) {
+			uint32_t v0 = fop2(s, SpvOpFAdd, low[c], c_float(s, c == 0 ? x + 0.5f : y + 0.5f));
+			xyuv[c] = fclamp(s, fop2(s, SpvOpFDiv, v0, c_float(s, dims[c])), 0.0f, 1.0f);
+		}
+		uint32_t uv = result2(s, &s->func, SpvOpCompositeConstruct, tv2, xyuv[0], xyuv[1]);
+		uint32_t color = sample_lod(g, blur_slot, 9, uv, 0, 0, 0);
+		uint32_t world = sample_lod(g, depth_slot, 10, uv, 0, 0, 0);
+		uint32_t w = composite_extract1(s, tf, world, 3);
+		uint32_t diff = glsl1(s, GLSLFAbs, fop2(s, SpvOpFSub, center_w, w));
+		uint32_t rel = fop2(s, SpvOpFDiv, diff, c_float(s, 2.0f));
+		uint32_t compat = fop2(s, SpvOpFDiv, c_float(s, 1.0f),
+			fop2(s, SpvOpFAdd, c_float(s, 1.0f), fop2(s, SpvOpFMul, rel, rel)));
+		uint32_t wx = x ? fract[0] : fop2(s, SpvOpFSub, c_float(s, 1.0f), fract[0]);
+		uint32_t wy = y ? fract[1] : fop2(s, SpvOpFSub, c_float(s, 1.0f), fract[1]);
+		uint32_t weight = fop2(s, SpvOpFMul, compat, fop2(s, SpvOpFMul, wx, wy));
+		total = fop2(s, SpvOpFAdd, total, weight);
+		for (int c = 0; c < 4; c++) {
+			uint32_t sample = composite_extract1(s, tf, color, (uint32_t)c);
+			uint32_t weighted = fop2(s, SpvOpFMul, sample, weight);
+			accum[c] = accum[c] ? fop2(s, SpvOpFAdd, accum[c], weighted) : weighted;
+		}
+	}
+	uint32_t safe_total = glsl2(s, GLSLFMax, total, c_float(s, 0.00001f));
+	uint32_t out[4];
+	for (int c = 0; c < 4; c++) {
+		uint32_t guided = fop2(s, SpvOpFDiv, accum[c], safe_total);
+		uint32_t orig = composite_extract1(s, tf, original, (uint32_t)c);
+		out[c] = fop2(s, SpvOpFAdd, fop2(s, SpvOpFMul, orig, c_float(s, 0.20f)),
+			fop2(s, SpvOpFMul, guided, c_float(s, 0.80f)));
+	}
+	uint32_t result = nid(s);
+	INS(&s->func, SpvOpCompositeConstruct, tv4, result, out[0], out[1], out[2], out[3]);
+	return result;
+}
 static void emit_sample_nondep(Gen *g, const UsseIter *it, const uint32_t sa_tex_unit[256], int *ok) {
 	Spv *s = &g->s; (void)sa_tex_unit;   /* non-dependent iterator sampling: the unit comes straight from fl->iters[].tex_unit, no SA lookup needed */
 	const int canon = canon_vary && !(it->point_coord && g->var_point) && it->tex_coord_src >= 0 && it->tex_coord_src < 10;
@@ -1552,6 +1617,8 @@ static void emit_sample_nondep(Gen *g, const UsseIter *it, const uint32_t sa_tex
 	} else coord = result2(s, &s->func, SpvOpCompositeConstruct, t_vec(s, t_float(s), 2), u, v);
 	uint32_t texel = srgb_fixup(g, it->tex_unit, (g->snap_mask >> (it->tex_unit & 15) & 1) && !slot_is_cube(g, slot) ? snap_fetch(g, slot, it->tex_unit, u, v)
 	                                               : sample_lod(g, slot, it->tex_unit, coord, 0, 0, grad));
+	if ((g->snap_mask & (1u << 16)) && it->tex_unit == 9 && !slot_is_cube(g, slot))
+		texel = uc_depth_guided_blur(g, slot, u, v, texel);
 	for (int c = 0; c < 4; c++) write_comp_f(g, &dst, 0, c, composite_extract1(s, t_float(s), texel, (uint32_t)c), ok);
 }
 /* fragment-shader prologue: pack every iterator (usse_fragment_layout) into PA exactly like
