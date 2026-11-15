@@ -428,14 +428,16 @@ static void sfx_trace_note(Voice *v, const char *event, uint32_t caller) {
     int next = pp ? (int16_t)RD16(pp + off + 10) : -1;
     uint64_t now = vo_us();
     if (!sfx_trace_origin) sfx_trace_origin = now;
-    fprintf(stderr, "    sfx: t_ms=%llu frame=%llu upd=%llu voice=%d seq=%u def=%u handle=%#x event=%s lr=%#x active=%d paused=%d release=%d rel_ms=%.1f elapsed_ms=%llu buf=%u pos=%u data=%#x bytes=%u loops=%d next=%d loops_seen=%u samples=%u hash=%08x\n",
+    fprintf(stderr, "    sfx: t_ms=%llu frame=%llu upd=%llu voice=%d seq=%u def=%u handle=%#x event=%s lr=%#x active=%d paused=%d release=%d rel_ms=%.1f elapsed_ms=%llu buf=%u pos=%u data=%#x bytes=%u loops=%d next=%d loops_seen=%u samples=%u hash=%08x cb_depth=%u cb_voice=%u cb_reason=%u cb_finished=%u\n",
         (unsigned long long)((now - sfx_trace_origin) / 1000),
         (unsigned long long)display_frames(), (unsigned long long)updates,
         i, sfx_trace_sequence[i], v->def, v->handle, event, caller,
         v->playing, v->paused, v->releasing, v->rel_ms,
         (unsigned long long)(sfx_trace_started[i] ? (now - sfx_trace_started[i]) / 1000 : 0),
         v->buffer, v->byte_pos, data, bytes, loops, next, sfx_trace_loops[i],
-        v->samples_gen, sfx_trace_hash(v));
+        v->samples_gen, sfx_trace_hash(v), sfx_cb_depth,
+        sfx_cb_depth ? sfx_cb_voice : 0, sfx_cb_depth ? sfx_cb_reason : 0,
+        sfx_cb_depth ? sfx_cb_finished : 0);
 }
 static void sfx_trace_play(Voice *v, uint32_t caller) {
     if (!sfx_trace_on() || !v || !PLAYER_VOICE(v->def)) return;
@@ -463,6 +465,51 @@ static void sfx_trace_loop(Voice *v) {
         sfx_trace_note(v, "loop-summary", 0);
         sfx_trace_last_loop[i] = now;
     }
+}
+
+
+/* Correlate Play requests with a guest callback executing synchronously. */
+static _Thread_local uint32_t sfx_cb_depth, sfx_cb_voice, sfx_cb_reason, sfx_cb_finished;
+/* Count GetInfo/GetStateData polls without printing a line on every poll. */
+static int sfx_query_on(void) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *e = getenv("RECOMP_NGS_SFX_QUERY_TRACE");
+        enabled = e && !strcmp(e, "1");
+    }
+    return enabled;
+}
+typedef struct {
+    uint32_t lr, calls, active, releasing, paused, last_voice;
+    uint64_t window_us;
+} SfxQueryStat;
+static SfxQueryStat sfx_queries[2][24];
+extern uint64_t display_frames(void);
+static void sfx_trace_query(Voice *v, uint32_t lr, int kind) {
+    if (!sfx_query_on() || !v || !PLAYER_VOICE(v->def)) return;
+    SfxQueryStat *items = sfx_queries[kind], *item = NULL;
+    for (int i = 0; i < 24; i++) {
+        if (items[i].window_us && items[i].lr == lr) { item = &items[i]; break; }
+        if (!items[i].window_us && !item) item = &items[i];
+    }
+    if (!item) return;
+    uint64_t now = vo_us();
+    if (!item->window_us) { item->window_us = now; item->lr = lr; }
+    if (now - item->window_us >= 1000000 && item->calls) {
+        uint64_t origin = sfx_trace_origin ? sfx_trace_origin : now;
+        fprintf(stderr, "    sfx-query: t_ms=%llu kind=%s lr=%#x calls=%u active=%u releasing=%u paused=%u last_voice=%u frame=%llu\n",
+            (unsigned long long)((now - origin) / 1000),
+            kind ? "player-state" : "voice-info", lr, item->calls, item->active,
+            item->releasing, item->paused, item->last_voice,
+            (unsigned long long)display_frames());
+        item->calls = item->active = item->releasing = item->paused = 0;
+        item->window_us = now;
+    }
+    item->calls++;
+    item->active += v->playing != 0;
+    item->releasing += v->releasing != 0;
+    item->paused += v->paused != 0;
+    item->last_voice = (uint32_t)VIDX(v);
 }
 
 static uint8_t vo_audible[512];   /* cleared on play, set on the first granule with samples_gen > 0 */
@@ -570,6 +617,7 @@ static void h_voice_bypass(Cpu *c) { Voice *v = voice_of(A0); if (v && A1 < MAX_
  * 1.3 s chunk and restarted, over and over, the dropship's roar cut off (2026-10-17) */
 static void h_voice_info(Cpu *c) {
 	Voice *v = voice_of(A0);
+	sfx_trace_query(v, c->r[14], 0);
 	memset(G(A1), 0, 24);
 	if (v) { WR32(A1, v->playing ? 1u | (v->paused ? 0x20u : 0) | (v->releasing ? 0x40u : 0) : 0); WR32(A1 + 4, 4);   /* SceNgsVoiceState bits: ACTIVE 1, PAUSED 0x20, KEY_OFF 0x40 (4, written for paused before, is FINALIZE) */ WR32(A1 + 8, 1); WR32(A1 + 12, 1); WR32(A1 + 16, 4); WR32(A1 + 20, v->playing ? v->upd_active : 0); }
 	if (v && v->def == DEF_SCREAM_AT9 && at9_log_on() && at9_polls[VIDX(v)] < 12) { at9_polls[VIDX(v)]++; fprintf(stderr, "    at9 v%d upd %llu GetInfo (lr %#x) -> state %u\n", VIDX(v), (unsigned long long)updates, c->r[14], RD32(A1)); }
@@ -1254,8 +1302,13 @@ static void h_system_update(Cpu *c) {
 			 * plays the line again 0.7 s later. Was the callback delivered, and when?) */
 			Voice *dv = vo_log_on() && d->reason == EV_END ? voice_of(d->voice) : 0;
 			if (dv && dv->def == DEF_SCREAM_AT9) fprintf(stderr, "    vo: v%d callback %s %#x delivered upd %llu\n", (int)VIDX(dv), d->fn == dv->fin_cb ? "finished" : "END", d->fn, (unsigned long long)updates);
-			if (sfx_trace_on()) { Voice *sv = voice_of(d->voice); sfx_trace_note(sv, d->fn == (sv ? sv->fin_cb : 0) ? "finished-callback-delivered" : "module-callback-delivered", d->fn); }
+			Voice *sv = sfx_trace_on() ? voice_of(d->voice) : NULL;
+			if (sv) sfx_trace_note(sv, d->fn == sv->fin_cb ? "finished-callback-delivered" : "module-callback-delivered", d->fn);
+			/* Restore attribution even when callbacks invoke other NGS callbacks. */
+			uint32_t prior_voice = sfx_cb_voice, prior_reason = sfx_cb_reason, prior_finished = sfx_cb_finished;
+			if (sv) { sfx_cb_depth++; sfx_cb_voice = (uint32_t)VIDX(sv); sfx_cb_reason = d->reason; sfx_cb_finished = d->fn == sv->fin_cb; }
 			guest_call(c, d->fn, info, 0);
+			if (sv) { sfx_cb_depth--; sfx_cb_voice = prior_voice; sfx_cb_reason = prior_reason; sfx_cb_finished = prior_finished; }
 		}
 	}
 	RET(0);
@@ -1264,6 +1317,7 @@ static void h_system_update(Cpu *c) {
 /* (voice, module, memory, size): a master bus's output granule, or a player's state */
 static void h_voice_state(Cpu *c) {
 	Voice *v = voice_of(A0);
+	sfx_trace_query(v, c->r[14], 1);
 	if (!v) { memset(G(A2), 0, A3); RET(0x804a0005u); return; }
 	if (v->mix) {
 		uint32_t n = 4 * granularity; if (n > A3) n = A3;

@@ -11,6 +11,7 @@ on:
       - lab/uc-menu-focus-slab-20261115
       - integration/accepted-nativ-blur-toggle-20261115
       - diagnostic/ak47-ngs-voice-trace-20261115
+      - diagnostic/ak47-ngs-cause-trace-20261115
       - improvement/stability-performance-120fps
     paths:
       - .github/workflows/build-windows-distribution.yml

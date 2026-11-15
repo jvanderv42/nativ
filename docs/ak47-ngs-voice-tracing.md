@@ -41,3 +41,24 @@ A trace alone cannot tell whether a sample audibly resembles an AK47. Correlatio
 ## Validation
 
 The changes are instrumentation-only in the source. A passing GitHub Actions distribution workflow confirms the package was built and contains the instrumented file, **not** that diagnostic output or audio playback have been validated on the target Windows system.
+
+## Cause-trace extension (November 15, 2026)
+
+The first successful diagnostic reproduction exhibited 347, 356, and 306 Play events in consecutive five-second windows (trace 105-120 seconds), with similar numbers of KeyOff requests. That is evidence of repeated game-issued Play calls, not a single voice looping alone, but the NGS implementation could still be influencing guest behavior.
+
+This cause-trace extension preserves NGS audio behavior and adds:
+
+- `cb_depth`, `cb_voice`, `cb_reason`, and `cb_finished` to every `sfx:` record. A nonzero depth means the API was invoked synchronously from a guest NGS callback. Depth zero does not rule out an earlier callback influencing guest state.
+- Optional `RECOMP_NGS_SFX_QUERY_TRACE=1`: one-second `sfx-query:` summaries of SceNgsVoiceGetInfo and SceNgsVoiceGetStateData call counts and the active, releasing, and paused statuses observed for each immediate caller LR. Each API tracks up to 24 distinct LR addresses; the rest are omitted. These counters add overhead, so leave disabled outside focused testing.
+
+Launch Project Nativ from PowerShell with both variables set, then use this diagnostic distribution to **recompile Uncharted** before running it:
+
+```powershell
+$env:RECOMP_NGS_SFX_TRACE = '1'
+$env:RECOMP_NGS_SFX_QUERY_TRACE = '1'
+# Run the actual diagnostic 'Project Nativ.exe' from this session.
+```
+
+Record a short video, the `session.log`, and the time the stuck sound begins and stops. The next investigation compares callback attribution and voice state polls during the sound burst, not aggregate voice-count totals alone.
+
+Do not interpret a passing build as verification of playback or logging on a target Windows PC.
