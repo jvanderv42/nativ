@@ -5612,6 +5612,21 @@ void gfx_gpu_draw(const GfxDraw *d) {
 			if (tx->data >= te->addr && tx->data < te->addr + bpp * te->width * te->height && bpp != tb) { snap_mask |= 1u << i; break; }
 		}
 	}
+	/* Prototype #2: scene-position guided DOF composition for the captured
+	 * Uncharted shader, independent of Distribution 41's low-resolution blur
+	 * filter. Bit 16 marks a distinct SPIR-V shader variant and cache entry.
+	 * No behavior changes unless RECOMP_UC_EDGE_DOF=1 is set at startup. */
+	if (fp && usse_program_hash(fp) == 0xb8a9cc91u) {
+		static int enabled = -1, reported;
+		if (enabled < 0) {
+			const char *value = getenv("RECOMP_UC_EDGE_DOF");
+			enabled = value && !strcmp(value, "1");
+		}
+		if (enabled) {
+			snap_mask |= 1u << 16;
+			if (!reported++) fprintf(stderr, "    gpu: experimental Uncharted geometry-aware DOF active for shader %#x\n", d->fprog);
+		}
+	}
 	VfPlan plan; vf_plan(d, vl, usse_program_pa_words(vp), &plan);   /* the vertex data path (above) picks the vertex shader variant */
 	ShaderEntry *vs = get_shader(d->vprog, vp, 0, vl, 0, vsa_for_smp, -1, vcube_mask, 0, plan.gpu ? &plan.vf : 0, plan.hash);
 	if (plan.gpu && (!vs || (!shader_pending(vs) && !vs->ok))) { plan.gpu = 0; vs = get_shader(d->vprog, vp, 0, vl, 0, vsa_for_smp, -1, vcube_mask, 0, 0, 0); }   /* (a layout the fetch prologue refused: the packer's variant, as before) */
