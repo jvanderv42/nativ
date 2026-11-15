@@ -3734,6 +3734,31 @@ static int no_view_size(uint32_t width, uint32_t height) {
 	return 1;
 }
 
+/* Diagnostic: bypass GPU views of one render-target source address.
+ * RECOMP_GPU_NO_VIEW_ADDR=0x19d40000 (source base, not sampled texture offset).
+ * Disabled by default; independent of the earlier size-selective diagnostic.
+ * Matching direct exact-target sampling still follows the original fast path. */
+static int no_view_addr(uint32_t addr) {
+	static int initialized, enabled, warned;
+	static uint32_t requested;
+	if (!initialized) {
+		initialized = 1;
+		const char *e = getenv("RECOMP_GPU_NO_VIEW_ADDR");
+		if (e && *e) {
+			char *end = 0;
+			unsigned long value = strtoul(e, &end, 0);
+			if (end != e && !*end && value > 0 && value <= UINT32_MAX) {
+				requested = (uint32_t)value;
+				enabled = 1;
+				fprintf(stderr, "    gpu: diagnostic address-specific view bypass for target %#x\n", requested);
+			} else fprintf(stderr, "    gpu: invalid RECOMP_GPU_NO_VIEW_ADDR='%s' (expected hex, e.g. 0x19d40000)\n", e);
+		}
+	}
+	if (!enabled || addr != requested) return 0;
+	if (warned++ < 12)
+		fprintf(stderr, "    gpu: diagnostic matched GPU render-target source %#x (match %d)\n", addr, warned);
+	return 1;
+}
 /* which decode the view shader runs for a target's format read by a texture's base format (-1: none known); tex_bpp: the texture's bytes per texel */
 static int view_mode(uint32_t tgt_fmt, const GfxTexture *tex, uint32_t *tex_bpp, uint32_t swz[4]) {
 	uint32_t tb = tgt_fmt & 0xF1800000u, xb = tex->format & 0xff000000u, sw = (tex->format >> 12) & 7;
@@ -3922,10 +3947,15 @@ static TexEntry *target_view(const GfxTexture *tex, TargetEntry **exact) {
 	/* Target-selective bypass applies to both mip-chain views and ordinary colour/depth views.
 	 * Select the newest eligible source, as the normal view path does. */
 	const int selective_no_view = dbest && (!best || dbest->gen > best->gen)
-		? no_view_size(dbest->w, dbest->h)
-		: best ? no_view_size(best->width, best->height) : 0;
+		? (no_view_size(dbest->w, dbest->h) || no_view_addr(dbest->key))
+		: best ? (no_view_size(best->width, best->height) || no_view_addr(best->addr)) : 0;
 	if (best && !dbest && gfx_texture_levels(tex) > 1 && !no_views() && !selective_no_view) { TexEntry *mv = mip_view(tex, best, snap2 ? best->snap : 0, snap2 ? best->snap_gen : 0); if (mv) return mv; }   /* every level a GPU target (the transfer chain's) */
 	if (ex && !snap2 && (!dbest || best->gen > dbest->gen) && !getenv("RECOMP_GPU_DEBUG_NO_RTT")) {
+		if (selective_no_view) {
+			static int notice;
+			if (notice++ < 6)
+				fprintf(stderr, "    gpu: diagnostic target %#x is direct exact sampling, not a converted GPU view; bypass not applicable\n", best->addr);
+		}
 		if (best == scene_entry) batch_flush("scene target sampled");   /* sampled while it is the attachment (undefined either way): at least after the draws before it */
 		*exact = best; return 0;
 	}
