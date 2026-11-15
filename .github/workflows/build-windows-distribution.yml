@@ -10,12 +10,14 @@ on:
       - experiment/memory-graphics-aspect-20261114
       - lab/uc-menu-focus-slab-20261115
       - integration/accepted-nativ-blur-toggle-20261115
+      - diagnostic/ak47-ngs-voice-trace-20261115
       - improvement/stability-performance-120fps
     paths:
       - .github/workflows/build-windows-distribution.yml
       - runtime/ui/overlay.cpp
       - runtime/ui/frame_rates.h
       - runtime/gfx/display.c
+      - runtime/audio/ngs.c
       - runtime/gfx/gfx.h
       - runtime/gfx/gfx_gpu.c
       - runtime/core/sysmem.c
@@ -162,6 +164,7 @@ jobs:
           cmp runtime/ui/frame_clock.h "$RUNNER_TEMP/nativ-package/ProjectNativ/runtime/ui/frame_clock.h"
           cmp runtime/gfx/display.c "$RUNNER_TEMP/nativ-package/ProjectNativ/runtime/gfx/display.c"
           cmp runtime/core/settings.c "$RUNNER_TEMP/nativ-package/ProjectNativ/runtime/core/settings.c"
+          cmp runtime/audio/ngs.c "$RUNNER_TEMP/nativ-package/ProjectNativ/runtime/audio/ngs.c"
           cmp packs/PCSA00029/pack.toml "$RUNNER_TEMP/nativ-package/ProjectNativ/packs/PCSA00029/pack.toml"
 
       - name: Generate and verify release-size manifest

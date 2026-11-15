@@ -395,6 +395,76 @@ void ngs_chain(char *out, size_t n) { vo_chain(out, n); }
 static int at9_log_on(void);   /* RECOMP_NGS_AT9_LOG (render_at9, below) */
 static uint8_t at9_polls[512];   /* (RECOMP_NGS_AT9_LOG) GetInfo/GetStateData polls logged since the voice's last play */
 static uint64_t vo_us(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (uint64_t)t.tv_sec * 1000000 + (uint64_t)t.tv_nsec / 1000; }
+
+/* RECOMP_NGS_SFX_TRACE=1: opt-in lifecycle tracing for player voices (PCM,
+ * ADPCM and ATRAC9). Only events and at most one loop summary per 5 seconds
+ * per voice are emitted; no audio samples, routing, or voice states change.
+ * Sequence numbers distinguish successive plays on the same reusable voice. */
+static int sfx_trace_on(void) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *e = getenv("RECOMP_NGS_SFX_TRACE");
+        enabled = e && !strcmp(e, "1");
+    }
+    return enabled;
+}
+static uint32_t sfx_trace_sequence[512], sfx_trace_loops[512];
+static uint64_t sfx_trace_started[512], sfx_trace_last_loop[512], sfx_trace_origin;
+static uint32_t sfx_trace_hash(Voice *v) {
+    uint32_t pp = v->params[0], offset = v->def == DEF_SCREAM_AT9 ? A_BUF(0) : P_BUF(0);
+    uint32_t addr = pp ? RD32(pp + offset) : 0, count = pp ? RD32(pp + offset + 4) : 0;
+    uint32_t hash = 2166136261u;
+    for (uint32_t k = 0; addr && k < count && k < 64; k++)
+        hash = (hash ^ RD8(addr + k)) * 16777619u;
+    return hash;
+}
+static void sfx_trace_note(Voice *v, const char *event, uint32_t caller) {
+    if (!sfx_trace_on() || !v || !PLAYER_VOICE(v->def)) return;
+    extern uint64_t display_frames(void);
+    const int i = VIDX(v), at9 = v->def == DEF_SCREAM_AT9;
+    const uint32_t pp = v->params[0], off = at9 ? A_BUF(v->buffer < 4 ? v->buffer : 0) : P_BUF(v->buffer < 4 ? v->buffer : 0);
+    uint32_t data = pp ? RD32(pp + off) : 0, bytes = pp ? RD32(pp + off + 4) : 0;
+    int loops = pp ? (int16_t)RD16(pp + off + 8) : 0;
+    int next = pp ? (int16_t)RD16(pp + off + 10) : -1;
+    uint64_t now = vo_us();
+    if (!sfx_trace_origin) sfx_trace_origin = now;
+    fprintf(stderr, "    sfx: t_ms=%llu frame=%llu upd=%llu voice=%d seq=%u def=%u handle=%#x event=%s lr=%#x active=%d paused=%d release=%d rel_ms=%.1f elapsed_ms=%llu buf=%u pos=%u data=%#x bytes=%u loops=%d next=%d loops_seen=%u samples=%u hash=%08x\\n",
+        (unsigned long long)((now - sfx_trace_origin) / 1000),
+        (unsigned long long)display_frames(), (unsigned long long)updates,
+        i, sfx_trace_sequence[i], v->def, v->handle, event, caller,
+        v->playing, v->paused, v->releasing, v->rel_ms,
+        (unsigned long long)(sfx_trace_started[i] ? (now - sfx_trace_started[i]) / 1000 : 0),
+        v->buffer, v->byte_pos, data, bytes, loops, next, sfx_trace_loops[i],
+        v->samples_gen, sfx_trace_hash(v));
+}
+static void sfx_trace_play(Voice *v, uint32_t caller) {
+    if (!sfx_trace_on() || !v || !PLAYER_VOICE(v->def)) return;
+    const int i = VIDX(v), at9 = v->def == DEF_SCREAM_AT9;
+    ++sfx_trace_sequence[i];
+    sfx_trace_loops[i] = 0;
+    sfx_trace_started[i] = vo_us();
+    sfx_trace_last_loop[i] = 0;
+    sfx_trace_note(v, "play", caller);
+    uint32_t pp = v->params[0];
+    if (!pp) return;
+    for (int b = 0; b < 4; b++) {
+        uint32_t off = at9 ? A_BUF(b) : P_BUF(b);
+        fprintf(stderr, "    sfx: voice=%d seq=%u buffer=%d addr=%#x bytes=%u loops=%d next=%d\\n",
+            i, sfx_trace_sequence[i], b, RD32(pp + off), RD32(pp + off + 4),
+            (int16_t)RD16(pp + off + 8), (int16_t)RD16(pp + off + 10));
+    }
+}
+static void sfx_trace_loop(Voice *v) {
+    if (!sfx_trace_on() || !v || !PLAYER_VOICE(v->def)) return;
+    const int i = VIDX(v);
+    uint32_t n = ++sfx_trace_loops[i];
+    uint64_t now = vo_us();
+    if (n == 1 || (n & (n - 1)) == 0 || now - sfx_trace_last_loop[i] >= 5000000) {
+        sfx_trace_note(v, "loop-summary", 0);
+        sfx_trace_last_loop[i] = now;
+    }
+}
+
 static uint8_t vo_audible[512];   /* cleared on play, set on the first granule with samples_gen > 0 */
 #define VO_BURST 20
 typedef struct { uint32_t lr, count; } VoCaller;
@@ -434,6 +504,7 @@ static void h_voice_play(Cpu *c) {
 		memcpy(&st->last_freq, G(pp + (at9 ? A_FREQ : P_FREQ)), 4); memcpy(&st->last_scal, G(pp + (at9 ? A_SCALAR : P_SCALAR)), 4);
 		dump_log_line(v, "play", 0);
 	}
+	sfx_trace_play(v, c->r[14]);
 	if (v && getenv("RECOMP_NGS_DEBUG")) {
 		uint32_t pp = v->params[0];
 		fprintf(stderr, "    ngs: play voice %#x def %u params:", A0, v->def);
@@ -451,6 +522,7 @@ static void h_voice_play(Cpu *c) {
 }
 static void h_voice_kill(Cpu *c) {   /* stopped dead: no callback */
 	Voice *v = voice_of(A0);
+	sfx_trace_note(v, "kill-request", c->r[14]);
 	if (v && v->def == DEF_SCREAM_AT9 && vo_log_on()) fprintf(stderr, "    vo: v%d kill us %llu upd %llu lr %#x\n", VIDX(v), (unsigned long long)vo_us(), (unsigned long long)updates, c->r[14]);
 	if (v) { v->playing = 0; v->finishing = 0; v->releasing = v->released_out = 0; }
 	RET(0);
@@ -462,10 +534,12 @@ static void h_voice_kill(Cpu *c) {   /* stopped dead: no callback */
 static void h_voice_keyoff(Cpu *c) {
 	pthread_mutex_lock(&lock);
 	Voice *v = voice_of(A0);
+	sfx_trace_note(v, "keyoff-request", c->r[14]);
 	if (v && v->def == DEF_SCREAM_AT9 && vo_log_on()) fprintf(stderr, "    vo: v%d keyoff us %llu upd %llu lr %#x\n", VIDX(v), (unsigned long long)vo_us(), (unsigned long long)updates, c->r[14]);
 	if (v && v->playing && !v->paused && PLAYER_VOICE(v->def) && !stages_off() && stage_module(v, ENV_ID) >= 0) {
 		if (!v->releasing) { v->releasing = 1; v->rel_ms = 0; v->rel_from = v->env_level; }
 	} else if (v) { if (v->playing && PLAYER_VOICE(v->def)) v->finishing = 1; v->playing = 0; v->releasing = 0; }
+	sfx_trace_note(v, "keyoff-applied", c->r[14]);
 	pthread_mutex_unlock(&lock);
 	RET(v ? 0 : 0x804a0005u);
 }
@@ -486,8 +560,8 @@ static void h_voice_module_cb(Cpu *c) {
 /* (voice, module, char message[]): the console names a parameter outside its range; the host
  * clamps nothing and reports none -- an empty message */
 static void h_params_out_of_range(Cpu *c) { if (A2) WR8(A2, 0); RET(0); }
-static void h_voice_pause(Cpu *c) { Voice *v = voice_of(A0); if (v) v->paused = 1; RET(0); }
-static void h_voice_resume(Cpu *c) { Voice *v = voice_of(A0); if (v) v->paused = 0; RET(0); }
+static void h_voice_pause(Cpu *c) { Voice *v = voice_of(A0); sfx_trace_note(v, "pause", c->r[14]); if (v) v->paused = 1; RET(0); }
+static void h_voice_resume(Cpu *c) { Voice *v = voice_of(A0); sfx_trace_note(v, "resume", c->r[14]); if (v) v->paused = 0; RET(0); }
 static void h_voice_bypass(Cpu *c) { Voice *v = voice_of(A0); if (v && A1 < MAX_MODULES) v->bypass[A1] = A2; if (v && getenv("RECOMP_NGS_DEBUG")) fprintf(stderr, "    ngs: bypass voice %#x def %u module %u = %u\n", A0, v->def, A1, A2); RET(0); }
 /* (voice, SceNgsVoiceInfo*): state, modules, inputs, outputs, patches per output, and update calls active -- the system
  * updates the voice has played through since it started. Killzone's sound engine (fn 0x81759340) reads a streaming
@@ -591,11 +665,16 @@ static uint32_t module_id(Voice *v, int m) {
 enum { EV_END = 0, EV_SWAPPED = 1, EV_DECODE_ERROR = 3 };
 #define EV_LOOPED(v) ((v)->def == DEF_SCREAM_AT9 ? 4u : 2u)
 static void player_event(Voice *v, uint32_t reason, uint32_t reason2, uint32_t ptr) {
+	if (reason == EV_LOOPED(v)) sfx_trace_loop(v);
+	else if (reason == EV_END) sfx_trace_note(v, "end-of-data", 0);
+	else if (reason == EV_DECODE_ERROR) sfx_trace_note(v, "decode-error", 0);
+	else if (reason == EV_SWAPPED) sfx_trace_note(v, "buffer-swapped", 0);
 	if (dump_log) { char ex[64]; snprintf(ex, sizeof ex, " reason2 %u ptr %#x", reason2, ptr); dump_log_line(v, reason == EV_END ? "END" : reason == EV_SWAPPED ? "SWAP" : reason == EV_DECODE_ERROR ? "DECODE_ERROR" : "LOOP", ex); }
 	if (!v->mod_cb[0] || ndue >= 256) return;
 	due[ndue++] = (Due){v->mod_cb[0], v->handle, v->rack, module_id(v, 0), reason, reason2, ptr, v->mod_ud[0]};
 }
 static void voice_finished(Voice *v) {
+	sfx_trace_note(v, "finished-callback-queued", 0);
 	if (!v->fin_cb || ndue >= 256) return;
 	due[ndue++] = (Due){v->fin_cb, v->handle, v->rack, module_id(v, 0), 0, 0, 0, v->fin_ud};
 }
@@ -1065,6 +1144,7 @@ static void h_system_update(Cpu *c) {
 		}
 		voice_stages(v, tmp, gn);
 		if (v->released_out) {   /* keyed off and its release has run out: finished, no END_OF_DATA */
+			sfx_trace_note(v, "release-completed", 0);
 			route(v, tmp, gn);
 			v->playing = 0; v->releasing = v->released_out = 0; v->finishing = 1;
 			continue;
@@ -1080,6 +1160,7 @@ static void h_system_update(Cpu *c) {
 		route(v, tmp, gn);
 		if (!v->playing && v->def == DEF_SCREAM_AT9) at9_log(v, v->params[0], v->buffer, "stopped");
 		if (!v->playing) {   /* it ran out of data (or failed) during this granule: END_OF_DATA unless the decoder already said why */
+			sfx_trace_note(v, "player-stopped", 0);
 			int failed = 0; for (int k = had; k < ndue; k++) failed |= due[k].voice == v->handle && due[k].reason == EV_DECODE_ERROR && v->def == DEF_SCREAM_AT9;
 			if (!failed) player_event(v, EV_END, 0, 0);
 			if (vo_log_on() && v->def == DEF_SCREAM_AT9) fprintf(stderr, "    vo: v%d callbacks at its end: module %#x finished %#x (queued %d)\n", i, v->mod_cb[0], v->fin_cb, ndue);
@@ -1173,6 +1254,7 @@ static void h_system_update(Cpu *c) {
 			 * plays the line again 0.7 s later. Was the callback delivered, and when?) */
 			Voice *dv = vo_log_on() && d->reason == EV_END ? voice_of(d->voice) : 0;
 			if (dv && dv->def == DEF_SCREAM_AT9) fprintf(stderr, "    vo: v%d callback %s %#x delivered upd %llu\n", (int)VIDX(dv), d->fn == dv->fin_cb ? "finished" : "END", d->fn, (unsigned long long)updates);
+			if (sfx_trace_on()) { Voice *sv = voice_of(d->voice); sfx_trace_note(sv, d->fn == (sv ? sv->fin_cb : 0) ? "finished-callback-delivered" : "module-callback-delivered", d->fn); }
 			guest_call(c, d->fn, info, 0);
 		}
 	}
