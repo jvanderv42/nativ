@@ -4474,6 +4474,33 @@ static void batch_flush_body(const char *why) {
  * Reports only the first divergent draw for the whole run (this is meant to localise the first
  * bug, not enumerate every pixel of every later one it causes). */
 static int gfx_check_on(void) { static int c = -1; if (c < 0) c = getenv("RECOMP_GFX_CHECK") != 0; return c; }
+/* Diagnostic: narrow the costly GPU-vs-software per-draw comparison to a
+ * single fragment GXP. Without RECOMP_GFX_CHECK_ONLY_FPROG, preserve the
+ * existing comparison of every draw. The full report selector below is
+ * independent of this execution filter. */
+static int gfx_check_selected(uint32_t fprog) {
+	static int initialized, enabled;
+	static uint32_t selected;
+	if (!initialized) {
+		initialized = 1;
+		const char *value = getenv("RECOMP_GFX_CHECK_ONLY_FPROG");
+		if (value && *value) {
+			char *end = 0;
+			unsigned long parsed = strtoul(value, &end, 16);
+			if (end != value && *end == '\0' && parsed <= UINT32_MAX) {
+				selected = (uint32_t)parsed;
+				enabled = 1;
+				fprintf(stderr, "    gpu: per-draw GPU/software check restricted to fragment %#x\n", selected);
+			} else {
+				enabled = 1;
+				selected = UINT32_MAX;
+				fprintf(stderr, "    gpu: invalid RECOMP_GFX_CHECK_ONLY_FPROG='%s'; comparison disabled\n", value);
+			}
+		}
+	}
+	return !enabled || fprog == selected;
+}
+
 static int gfx_check_reported, full_reported;
 /* RECOMP_GFX_CHECK=rgb: ignore alpha (a target that is only ever presented never shows it, and an
  * alpha-only difference in a clear otherwise stops the check before any visible divergence) */
@@ -4535,12 +4562,12 @@ static void gfx_check_draw(const GfxDraw *d, TargetEntry *e, int has_depth, cons
 		        d->vprog, d->fprog, e->addr, e->width, e->height, e->format,
 		        d->blend.present, d->depth_func, d->depth_write, d->stencil_func, d->cull,
 		        ndiff, e->width * e->height, tol, x0, y0, x1, y1);
-		FILE *f = fopen("/tmp/gfxcheck_gpu.ppm", "wb");
+		FILE *f = fopen("gfxcheck_gpu.ppm", "wb");
 		if (f) { fprintf(f, "P6\n%u %u\n255\n", e->width, e->height); for (uint32_t i = 0; i < e->width * e->height; i++) fwrite(gpu_rgba + 4 * i, 1, 3, f); fclose(f); }
-		f = fopen("/tmp/gfxcheck_soft.ppm", "wb");
+		f = fopen("gfxcheck_soft.ppm", "wb");
 		if (f) { fprintf(f, "P6\n%u %u\n255\n", e->width, e->height); for (uint32_t i = 0; i < e->width * e->height; i++) fwrite(soft_rgba + 4 * i, 1, 3, f); fclose(f); }
-		fprintf(stderr, "  saved /tmp/gfxcheck_gpu.ppm, /tmp/gfxcheck_soft.ppm\n");
-		/* the textures it could read, decoded as the software path sees them (/tmp/gfxcheck_tex<unit>.ppm),
+		fprintf(stderr, "  saved gfxcheck_gpu.ppm, gfxcheck_soft.ppm\n");
+		/* the textures it could read, decoded as the software path sees them (gfxcheck_tex<unit>.ppm),
 		 * and which one the GPU path would bind instead if the address is a live render target */
 		for (int u = 0; u < 16; u++) {
 			const GfxTexture *t = &d->tex[u];
@@ -4549,7 +4576,7 @@ static void gfx_check_draw(const GfxDraw *d, TargetEntry *e, int has_depth, cons
 			fprintf(stderr, "  tex unit %d: data %#x fmt %#x %ux%u u_mode %#x v_mode %#x%s\n", u, t->data, t->format, t->width, t->height,
 			        t->u_mode, t->v_mode, live ? "  [live GPU render target: GPU samples its colour texture]" : "");
 			uint8_t *rgba = malloc(4u * t->width * t->height); gfx_decode_texture_rgba8(t, rgba);
-			char path[64]; snprintf(path, sizeof path, "/tmp/gfxcheck_tex%d.ppm", u);
+			char path[64]; snprintf(path, sizeof path, "gfxcheck_tex%d.ppm", u);
 			FILE *tf = fopen(path, "wb");
 			if (tf) { fprintf(tf, "P6\n%u %u\n255\n", t->width, t->height); for (uint32_t i = 0; i < (uint32_t)t->width * t->height; i++) fwrite(rgba + 4 * i, 1, 3, tf); fclose(tf); }
 			free(rgba);
@@ -5700,7 +5727,7 @@ void gfx_gpu_draw(const GfxDraw *d) {
 	 * above) in the target's own raw format, so the comparison below can run the software path
 	 * on an exact copy of what the GPU is about to draw onto, then diff the two results. */
 	uint8_t *check_pre = 0; uint32_t check_pre_bytes = 0;
-	if (gfx_check_on() && scene_entry->addr) {
+	if (gfx_check_on() && gfx_check_selected(d->fprog) && scene_entry->addr) {
 		GfxTarget gt = target_entry_as_gfx(scene_entry);
 		check_pre_bytes = (uint32_t)gfx_target_bpp(&gt) * scene_entry->width * scene_entry->height;
 		check_pre = malloc(check_pre_bytes);
