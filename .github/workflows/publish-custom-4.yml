@@ -1,0 +1,99 @@
+name: Publish accepted Project Nativ Distribution 45
+
+# One-time publication of the user-tested distribution. Do not run on every push.
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/publish-custom-4.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    name: Publish v0.1.5-custom.4 from accepted Distribution 45
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact release source for provenance
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Confirm release and tested runtime match
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Distribution 45 was built from the tested PR head. The merged
+          # main branch may differ in README and release workflow only.
+          tested_sha=a742f77ce088d94785b316dfe9bf6a122094fef3
+          git merge-base --is-ancestor "$tested_sha" "$GITHUB_SHA"
+          git diff --quiet "$tested_sha" "$GITHUB_SHA" -- . ':(exclude)README.md' ':(exclude).github'
+          echo "Verified runtime, game packs, toolchain and launcher match the tested build."
+
+      - name: Download tested Distribution 45 and verify checksum
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          gh run download 43750614400 --repo "${{ github.repository }}" --name nativ-windows-distribution-45 --dir dist
+          shopt -s nullglob
+          candidates=(dist/ProjectNativ-windows-candidate-*.zip)
+          test "${#candidates[@]}" -eq 1
+          test -s "${candidates[0]}"
+          (cd dist && sha256sum --check SHA256SUMS.txt)
+          unzip -tq "${candidates[0]}" | tail -1
+          mv "${candidates[0]}" dist/nativ-windows-distribution-45.zip
+          (cd dist && sha256sum nativ-windows-distribution-45.zip > SHA256SUMS-release.txt)
+          printf 'Windows package: accepted Distribution 45\nPackage source commit: %s\nRelease source commit: %s\nGitHub Actions build: %s\nStatus: tested by project maintainer; unofficial Windows community fork\nRecompile existing game builds to incorporate runtime changes.\n' \
+            a742f77ce088d94785b316dfe9bf6a122094fef3 "$GITHUB_SHA" \
+            https://github.com/jvanderv42/nativ/actions/runs/43750614400 > dist/BUILD-INFO.txt
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > release-notes.md <<'NOTES'
+          # Project Nativ v0.1.5-custom.4 — Tested Distribution 45
+
+          This unofficial Windows release consolidates the custom Project Nativ improvements into `main`. **Distribution 45** was tested successfully before merging and is published without rebuilding the tested executable.
+
+          ## What's new
+          - **Uncharted: Golden Abyss blur fix:** Corrects the narrow sharp bands in the title and pause-menu background blur; regular gameplay depth of field is preserved.
+          - **Blur toggle:** Enabled by default. Change it under **F10 → Display → Menu blur correction** or the top-edge **View** menu; the choice persists per game. `RECOMP_UC_MENU_BLUR=0|1` remains available as a diagnostic override.
+          - **Experimental 120 FPS mode** with the custom frame-rate and virtual display timing enhancements.
+          - **Improved DualShock 4/DualSense touch controls:** front/rear emulation, touchpad taps, drags and button modifiers.
+          - **Improved touchscreen input** for streamed Windows gameplay on supported handhelds.
+          - **Frame-aware presentation and graphics/stability improvements** developed across the custom fork.
+
+          ## Install
+          1. Download **nativ-windows-distribution-45.zip** and extract the whole archive.
+          2. Open the extracted **ProjectNativ** directory and run **Project Nativ.exe**.
+          3. Supply your own legally obtained, supported Vita game and firmware files.
+          4. Recompile previously compiled games when necessary to incorporate runtime changes.
+          5. Keep your previous working distribution and game saves for rollback.
+
+          ## Verification and provenance
+          - Distribution 45 Windows build: [GitHub Actions run 43750614400](https://github.com/jvanderv42/nativ/actions/runs/43750614400) — successful.
+          - Tested Windows package source: `a742f77ce088d94785b316dfe9bf6a122094fef3`.
+          - Release tag: updated `main` commit. Source files used by the package are unchanged; README and release-workflow changes are documentation/publishing only.
+          - The ZIP checksum is included in **SHA256SUMS-release.txt**; the source details are in **BUILD-INFO.txt**.
+
+          120 FPS remains experimental and game-dependent. This is an unofficial community fork, not an upstream Project Nativ release; no proprietary Vita games or firmware are bundled.
+          NOTES
+          gh release create v0.1.5-custom.4 \
+            dist/nativ-windows-distribution-45.zip \
+            dist/SHA256SUMS-release.txt dist/BUILD-INFO.txt \
+            --repo "${{ github.repository }}" \
+            --target "$GITHUB_SHA" \
+            --title "Project Nativ v0.1.5-custom.4 — Tested Distribution 45" \
+            --notes-file release-notes.md \
+            --latest

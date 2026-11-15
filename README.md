@@ -3,7 +3,7 @@
 </p>
 
 <h1 align="center">Project Nativ Custom</h1>
-<p align="center"><strong>Play supported PS Vita games as native Windows applications, with improved controller touch input and smoother high-refresh-rate PC streaming.</strong></p>
+<p align="center"><strong>Play supported PS Vita games as native Windows applications, with improved controller touch input, optional 120 FPS playback, and targeted Uncharted visual corrections.</strong></p>
 <p align="center">
   An unofficial Windows-focused fork of <a href="https://github.com/TheLostPantheon/nativ">Project Nativ</a>, developed and tested with Uncharted: Golden Abyss, Killzone: Mercenary, and DualShock 4 touch controls.
 </p>
@@ -17,7 +17,7 @@
   <a href="https://github.com/jvanderv42/nativ/actions"><img src="https://img.shields.io/badge/builds-GitHub%20Actions-2088ff" alt="GitHub Actions builds"></a>
 </p>
 
-> **The short version:** This fork packages a complete Windows Project Nativ environment and concentrates on practical gameplay improvements: more responsive PS Vita touch emulation using a PlayStation controller, improved touch input, steadier frame presentation while streaming, and optional experimental 120 FPS operation. Download the current tested distribution from **[Releases](https://github.com/jvanderv42/nativ/releases)**.
+> **The short version:** This unofficial Windows fork packages a complete Project Nativ environment and integrates improved PS Vita touch controls, frame-aware presentation, optional experimental 120 FPS gameplay, graphics and stability updates, and a toggleable Uncharted menu/pause blur correction (enabled by default). Download the current release from **[Releases](https://github.com/jvanderv42/nativ/releases)**.
 
 ## Why this fork exists
 
@@ -43,6 +43,8 @@ Development and hands-on testing focused on a Windows gaming PC streaming to an 
 | **Android handheld touchscreen input** | Improves recognition of short touches and longer presses when using the streamed handheld's screen. |
 | **Frame-aware presentation** | Reduces unnecessary rendering/presentation work to support more consistent Windows and streamed gameplay. |
 | **Optional 120 FPS mode** | Adds experimental 120 Hz timing and 30/60/120 FPS configuration options; results depend on the game and hardware. |
+| **Uncharted menu blur correction** | Removes distracting narrow sharp bands in the title and pause-menu depth-of-field blur; enabled by default, with a per-game On/Off toggle. |
+| **Graphics and reliability updates** | Includes targeted render-target scaling, widescreen/visual settings, memory reuse and other stability improvements from the tested custom development branch. |
 | **Complete Windows distribution** | Packages the launcher, runtime, Python environment, toolchain, and supporting files for Windows setup without building the entire development environment yourself. |
 
 These are custom-fork changes or packaging improvements layered on top of Project Nativ's existing game recompilation and runtime technology. They do **not** mean every game supports every feature.
@@ -61,6 +63,17 @@ These are custom-fork changes or packaging improvements layered on top of Projec
 Keep a backup of any known-good distribution, game builds, and save data before switching versions. The published release ZIP, checksums, and build details are available on the [Releases page](https://github.com/jvanderv42/nativ/releases), not only as expiring GitHub Actions artifacts.
 
 **Platform note:** The packaged *custom release* is for **Windows**. The original Project Nativ also has macOS and Linux support, but this fork does not advertise tested custom binaries for those platforms.
+
+## Uncharted menu blur correction
+
+In **Uncharted: Golden Abyss**, a game-specific correction smooths the title and pause-menu background blur by removing narrow in-focus bands. It does **not** replace normal gameplay depth of field.
+
+- **Default:** On, including the first launch with no saved preference.
+- **In-game setting:** Press **F10 → Display → Menu blur correction**, or use the top-edge **View** menu.
+- **Saved preference:** On/Off changes are applied to subsequent relevant draws and stored in Uncharted's own `settings.ini`. The setting does not appear in other games.
+- **Diagnostic override:** `RECOMP_UC_MENU_BLUR=0` disables the correction and `RECOMP_UC_MENU_BLUR=1` forces it on for the process. When an override is set, the corresponding in-game control is unavailable until the game is restarted without it.
+
+The correction was evaluated in the Windows/Nightjar workflow and is intentionally limited to the identified Uncharted menu/pause compositing shaders. See [technical notes](docs/uncharted-menu-focus-slab.md) for details.
 
 ## Controller and touchscreen setup
 
@@ -106,13 +119,13 @@ For a detailed explanation, see [Architecture](docs/architecture.md), [Runtime](
 
 ## Stable releases, source and development
 
-The current baseline is the published **Distribution 20** release, based on source commit `c1af8e2669742d7e886bb5cbc56ab9edcc94420e`. It restores the earlier UI/input implementation after a subsequent experimental change caused regressions. The underlying runtime and game source is not rebuilt merely by publishing a release.
+The main branch now contains the accepted custom runtime improvements, including the default-on Uncharted blur toggle. The current release uses the user-tested **Distribution 45** Windows package, built from integration commit `a742f77ce088d94785b316dfe9bf6a122094fef3`. The published release tag points to the updated `main` source; runtime, game-pack and launcher files in that tag are unchanged from the tested build. Distribution 20 remains available as an older known-good recovery release.
 
 **For future downloads always use [Releases](https://github.com/jvanderv42/nativ/releases)** rather than a hard-coded version URL. Release numbers and build filenames can change without requiring a README edit.
 
-This repository's `main` branch contains the upstream-aligned project base. Custom Windows development and the Distribution 20 build were carried out on the [experimental/120fps branch](https://github.com/jvanderv42/nativ/tree/experimental/120fps), with the accepted release pinned to its exact source commit. If you inspect or compile code, **use the release tag/commit** to reproduce the published version rather than assuming `main` contains all custom runtime changes.
+**`main` is now the integrated custom development baseline**, following the reviewed and user-tested integration of the experimental work. Historical experiment branches remain available for reference; ongoing work should be based on `main` unless deliberately isolated. For reproducibility, use the corresponding release tag and the included build metadata, and note that the accepted distribution was packaged before the documentation-only release commit.
 
-The release ZIP is built using [GitHub Actions](https://github.com/jvanderv42/nativ/actions). The published distribution includes the build metadata and a SHA-256 checksum file for integrity checking.
+The Windows distribution is built using [GitHub Actions](https://github.com/jvanderv42/nativ/actions). Releases include a full Windows package, build provenance and a SHA-256 checksum file for integrity checking. Runtime changes in the distribution generally require recompiling existing games.
 
 ## Known limitations and feedback
 
