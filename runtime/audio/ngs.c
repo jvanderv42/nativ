@@ -418,6 +418,7 @@ static uint32_t sfx_trace_hash(Voice *v) {
         hash = (hash ^ RD8(addr + k)) * 16777619u;
     return hash;
 }
+static _Thread_local uint32_t sfx_cb_depth, sfx_cb_voice, sfx_cb_reason, sfx_cb_finished;
 static void sfx_trace_note(Voice *v, const char *event, uint32_t caller) {
     if (!sfx_trace_on() || !v || !PLAYER_VOICE(v->def)) return;
     extern uint64_t display_frames(void);
@@ -469,7 +470,6 @@ static void sfx_trace_loop(Voice *v) {
 
 
 /* Correlate Play requests with a guest callback executing synchronously. */
-static _Thread_local uint32_t sfx_cb_depth, sfx_cb_voice, sfx_cb_reason, sfx_cb_finished;
 /* Count GetInfo/GetStateData polls without printing a line on every poll. */
 static int sfx_query_on(void) {
     static int enabled = -1;
