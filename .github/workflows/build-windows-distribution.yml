@@ -8,6 +8,7 @@ on:
       - experimental/120fps
       - experiment/luufen-selective-20261114
       - experiment/memory-graphics-aspect-20261114
+      - experiment/uncharted-geometry-aware-dof-20261115
       - improvement/stability-performance-120fps
     paths:
       - .github/workflows/build-windows-distribution.yml
