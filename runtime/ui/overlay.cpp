@@ -271,6 +271,20 @@ static void slider_row(const char *id, float *v, float lo, float hi, const char 
 	ImGui::SetNextItemWidth(-FLT_MIN);
 	ImGui::SliderFloat(id, v, lo, hi, fmt, fl);
 }
+/* Uncharted-only correction, saved with the game's own settings. A process
+ * override takes precedence and disables the UI to avoid a misleading toggle. */
+static void uc_menu_blur_toggle(void) {
+	const char *override_value = std::getenv("RECOMP_UC_MENU_BLUR");
+	const bool forced = override_value && *override_value;
+	bool enabled = forced ? std::atoi(override_value) != 0 : settings_int("uc_menu_blur", 1) != 0;
+	ImGui::BeginDisabled(forced);
+	if (ui::toggle("ucMenuBlur", &enabled)) {
+		settings_set_int("uc_menu_blur", enabled ? 1 : 0);
+		settings_save();
+	}
+	ImGui::EndDisabled();
+	if (forced) ImGui::TextDisabled("Overridden by RECOMP_UC_MENU_BLUR");
+}
 static void page_display(void) {
 	if (!ui::rows_begin("display")) return;
 	ui::row("Resolution", "The game drawn at a multiple of the Vita's 960 × 544. Higher is sharper; 4× and up want a fast GPU.");
@@ -341,6 +355,10 @@ static void page_display(void) {
 	ui::row("Shadow edges", "How soft the edges of shadows are.");
 	{	static const char *const names[3] = {"Original##sf", "Soft##sf", "Softer##sf"}; int v = settings_int("shadow_filter", 1);
 		if (ui::segmented(names, 3, &v)) { settings_set_int("shadow_filter", v); settings_save(); }
+	}
+	if (game_option("uc_menu_blur")) {
+		ui::row("Menu blur correction", "Uncharted: smooths the menu and pause-screen blur by removing narrow sharp bands. Enabled by default; does not change gameplay depth of field.");
+		uc_menu_blur_toggle();
 	}
 	ui::rows_end();
 }
@@ -682,6 +700,17 @@ static void menu_view(void) {
 			if (ImGui::MenuItem(name, nullptr, active == rate)) set_frame_rate(rate);
 		}
 		ImGui::EndMenu();
+	}
+	if (game_option("uc_menu_blur")) {
+		const char *override_value = std::getenv("RECOMP_UC_MENU_BLUR");
+		const bool forced = override_value && *override_value;
+		bool enabled = forced ? std::atoi(override_value) != 0 : settings_int("uc_menu_blur", 1) != 0;
+		ImGui::BeginDisabled(forced);
+		if (ImGui::MenuItem("Menu blur correction", nullptr, &enabled)) {
+			settings_set_int("uc_menu_blur", enabled ? 1 : 0);
+			settings_save();
+		}
+		ImGui::EndDisabled();
 	}
 	if (ImGui::BeginMenu("On-screen stats")) {
 		static const char *const names[3] = {"Off", "FPS", "Full"};

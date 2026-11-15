@@ -9,6 +9,7 @@ on:
       - experiment/luufen-selective-20261114
       - experiment/memory-graphics-aspect-20261114
       - lab/uc-menu-focus-slab-20261115
+      - integration/accepted-nativ-blur-toggle-20261115
       - improvement/stability-performance-120fps
     paths:
       - .github/workflows/build-windows-distribution.yml

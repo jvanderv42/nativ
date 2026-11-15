@@ -5574,7 +5574,8 @@ void gfx_gpu_draw(const GfxDraw *d) {
 	sync_draw_reads(d, 0, fp);   /* (the SA words below, the vertex streams the rings copy) */
 	usse_setup_registers(vp, &vdraw, d->vuniforms, d->vubuf);
 	usse_setup_registers(fp, &fdraw, d->funiforms, d->fubuf);
-	/* RECOMP_UC_MENU_BLUR=1 (off unless set; Uncharted's two DOF/tonemap composites only, GXP hashes 0xb8a9cc91 and 0xaecc460e): the program
+	/* Uncharted menu blur correction (default enabled via per-game uc_menu_blur setting;
+	 * RECOMP_UC_MENU_BLUR=0|1 overrides for diagnostics). Only the two known DOF composites: GXP hashes 0xb8a9cc91 and 0xaecc460e): the program
 	 * blends sharp and quarter-resolution scene by  x * saturate((|W - y| - z) * w),  g_vDofParams = (x, y, z, w) in its
 	 * default uniform buffer's floats 16..19 (SA 16..19), W the scene-position buffer's fourth channel. The title menu
 	 * sets (1, 10.139, 0.1, 10): everything blurred but a slab 0.2 units deep around y, which is left fully
@@ -5584,8 +5585,13 @@ void gfx_gpu_draw(const GfxDraw *d) {
 	 * packs it to), so the whole scene takes the blur at the game's own strength x. Guest memory, the shader and every
 	 * other state of g_vDofParams (gameplay's wide ranges) are untouched. docs/uncharted-menu-focus-slab.md */
 	if (fp && (usse_program_hash(fp) == 0xb8a9cc91u || usse_program_hash(fp) == 0xaecc460eu)) {   /* the title menu's composite; the in-game one (a bloom input more, the same blend and g_vDofParams place): paused, (1, <the last focus distance>, 0.1, 10) */
-		static int on = -1, said;
-		if (on < 0) { const char *e = getenv("RECOMP_UC_MENU_BLUR"); on = e && *e && *e != '0'; }
+		static int env_override = -1, said;
+		/* Read the process override once; the saved per-game setting remains live. */
+		if (env_override < 0) {
+			const char *e = getenv("RECOMP_UC_MENU_BLUR");
+			env_override = e && *e ? (atoi(e) != 0 ? 2 : 1) : 0;
+		}
+		const int on = env_override ? env_override == 2 : settings_int("uc_menu_blur", 1) != 0;
 		if (on && fdraw.sa[18].f <= 0.25f && fdraw.sa[18].f >= 0.0f && fdraw.sa[19].f >= 4.0f && fdraw.sa[16].f > 0.0f) {
 			fdraw.sa[17].f = -30000.0f;
 			if (!said++) fprintf(stderr, "    gpu: RECOMP_UC_MENU_BLUR: Uncharted menu in-focus slab removed (g_vDofParams z %g, w %g)\n", fdraw.sa[18].f, fdraw.sa[19].f);
