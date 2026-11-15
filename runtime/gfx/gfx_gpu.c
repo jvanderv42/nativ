@@ -5574,6 +5574,23 @@ void gfx_gpu_draw(const GfxDraw *d) {
 	sync_draw_reads(d, 0, fp);   /* (the SA words below, the vertex streams the rings copy) */
 	usse_setup_registers(vp, &vdraw, d->vuniforms, d->vubuf);
 	usse_setup_registers(fp, &fdraw, d->funiforms, d->fubuf);
+	/* RECOMP_UC_MENU_BLUR=1 (off unless set; Uncharted's two DOF/tonemap composites only, GXP hashes 0xb8a9cc91 and 0xaecc460e): the program
+	 * blends sharp and quarter-resolution scene by  x * saturate((|W - y| - z) * w),  g_vDofParams = (x, y, z, w) in its
+	 * default uniform buffer's floats 16..19 (SA 16..19), W the scene-position buffer's fourth channel. The title menu
+	 * sets (1, 10.139, 0.1, 10): everything blurred but a slab 0.2 units deep around y, which is left fully
+	 * sharp -- 3% of the menu's pixels, a stair-shaped sliver across the steps and through the foliage, drawn at the
+	 * render scale against a 180x102 blur. When the in-focus range is that thin (z <= 0.25 with a ramp of w >= 4) the
+	 * focus distance in THIS DRAW's register copy moves out of the scene (-30000, exact in the F16 the secondary program
+	 * packs it to), so the whole scene takes the blur at the game's own strength x. Guest memory, the shader and every
+	 * other state of g_vDofParams (gameplay's wide ranges) are untouched. docs/uncharted-menu-focus-slab.md */
+	if (fp && (usse_program_hash(fp) == 0xb8a9cc91u || usse_program_hash(fp) == 0xaecc460eu)) {   /* the title menu's composite; the in-game one (a bloom input more, the same blend and g_vDofParams place): paused, (1, <the last focus distance>, 0.1, 10) */
+		static int on = -1, said;
+		if (on < 0) { const char *e = getenv("RECOMP_UC_MENU_BLUR"); on = e && *e && *e != '0'; }
+		if (on && fdraw.sa[18].f <= 0.25f && fdraw.sa[18].f >= 0.0f && fdraw.sa[19].f >= 4.0f && fdraw.sa[16].f > 0.0f) {
+			fdraw.sa[17].f = -30000.0f;
+			if (!said++) fprintf(stderr, "    gpu: RECOMP_UC_MENU_BLUR: Uncharted menu in-focus slab removed (g_vDofParams z %g, w %g)\n", fdraw.sa[18].f, fdraw.sa[19].f);
+		}
+	}
 	UsseInst scratch;
 	memset(&scratch, 0, sizeof scratch); usse_run_secondary(vp, &scratch, &vdraw);
 	memset(&scratch, 0, sizeof scratch); usse_run_secondary(fp, &scratch, &fdraw);
