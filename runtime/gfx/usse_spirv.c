@@ -190,6 +190,7 @@ typedef struct {
 	uint32_t var_vary[16];             /* vertex: Output vec4 per Location; fragment: Input vec4 per Location (word group (loc*4+4)) */
 	int nvary;
 	uint32_t var_frag_color;            /* fragment: Output vec4 colour */
+	uint32_t uc_scene_color, uc_geom_edge; /* opt-in Uncharted DOF: sharp colour and scene-position discontinuity */
 	uint32_t var_frag_coord, fetch_var, t_img2d, t_subpass; int fetch;   /* fetch: 0 none, 1 the sampled framebuffer copy, 2 the input attachment (framebuffer fetch) -- usse_spirv_set_fetch_mode; 3 zeros, 4 zeros then ones in a second run (usse_spirv_set_fetch_zero) */
 	char why[120];       /* the first reason this program was given up on, for SpirvModule.err */
 	uint32_t var_vprobe; /* RECOMP_PROBE=T|P|O... (vertex mode): the vertex's snapshot travels to the fragment as a flat varying at Location nvary */
@@ -1042,7 +1043,9 @@ void usse_spirv_key(const UsseProgram *prog, const UsseFragLayout *fl, const uin
 	}
 	if (fl) for (int i = 0; i < fl->niters; i++) if (fl->iters[i].is_tex && fl->iters[i].tex_unit >= 0 && fl->iters[i].tex_unit < 16) used |= 1u << fl->iters[i].tex_unit;
 	if (cube_mask) *cube_mask &= used;
-	if (snap_mask) *snap_mask &= used;
+	/* Preserve the opt-in Uncharted geometry-aware composition marker in the shader
+	 * cache key. Texture-unit snap bits occupy 0..15; bit 16 is a variant flag. */
+	if (snap_mask) *snap_mask &= used | (1u << 16);
 	if (color_kind && *color_kind >= 0) *color_kind = fl && (fl->color_type == TY_U32 || fl->color_type == TY_S32) && (*color_kind == 1 || *color_kind == 2) ? *color_kind : 0;   /* (emit_frag_epilogue: raw words by kind 1, 2, else bytes) */
 }
 uint32_t usse_spirv_predict_cube(const UsseProgram *prog, const UsseFragLayout *fl, const uint32_t sa_tex_unit[256]) {
@@ -1518,6 +1521,54 @@ static void canon_nondep_coord(Gen *g, const UsseIter *it, int cube, uint32_t *u
 		*u = fsel(g, div, fop2(s, SpvOpFDiv, *u, w), *u); *v = fsel(g, div, fop2(s, SpvOpFDiv, *v, w), *v);
 	}
 }
+/* Uncharted DOF experimental geometry edge signal.
+ * Unit 10's RGBA16F buffer contains smooth scene-position coordinates on
+ * surfaces and sharp jumps at object boundaries (verified from frame_2355.vfc).
+ * Compare full-resolution neighbours using the native 720x408 texel steps.
+ * No threshold or host-dependent information is baked into the game shaders.
+ * The response is used after the original composition, not to blur the
+ * low-resolution unit 9 texture again. */
+static uint32_t uc_position_edge(Gen *g, int slot, int unit, uint32_t u, uint32_t v, uint32_t center) {
+	Spv *s = &g->s; uint32_t edge = c_float(s, 0.0f);
+	const float offsets[4][2] = {{1.0f / 720.0f, 0.0f}, {-1.0f / 720.0f, 0.0f},
+	                             {0.0f, 1.0f / 408.0f}, {0.0f, -1.0f / 408.0f}};
+	for (int k = 0; k < 4; k++) {
+		uint32_t du = fop2(s, SpvOpFAdd, u, c_float(s, offsets[k][0]));
+		uint32_t dv = fop2(s, SpvOpFAdd, v, c_float(s, offsets[k][1]));
+		uint32_t uv = result2(s, &s->func, SpvOpCompositeConstruct, t_vec(s, t_float(s), 2), du, dv);
+		uint32_t neighbor = sample_lod(g, slot, unit, uv, 0, 0, 0);
+		for (int c = 0; c < 3; c++) {
+			uint32_t p = composite_extract1(s, t_float(s), center, (uint32_t)c);
+			uint32_t q = composite_extract1(s, t_float(s), neighbor, (uint32_t)c);
+			uint32_t delta = glsl1(s, GLSLFAbs, fop2(s, SpvOpFSub, p, q));
+			edge = glsl2(s, GLSLFMax, edge, delta);
+		}
+	}
+	return edge;
+}
+/* Post-composition foreground edge protection, based on scene-position jumps.
+ * The original DOF composition is evaluated unchanged. Near geometry
+ * discontinuities we conservatively restore at most 30% of the sharp scene.
+ * This is NOT a recreation of the game's native depth-weight calculation;
+ * preserve original alpha and off-by-default rendering for A/B comparison. */
+static void uc_dof_edge_composite(Gen *g) {
+	if (!(g->snap_mask & (1u << 16)) || !g->uc_scene_color || !g->uc_geom_edge) return;
+	Spv *s = &g->s; uint32_t tf = t_float(s), tv4 = t_vec(s, tf, 4);
+	uint32_t orig = load(s, tv4, g->var_frag_color);
+	uint32_t edge = fop2(s, SpvOpFDiv, fop2(s, SpvOpFSub, g->uc_geom_edge, c_float(s, 0.35f)), c_float(s, 2.5f));
+	uint32_t weight = fop2(s, SpvOpFMul, fclamp(s, edge, 0.0f, 1.0f), c_float(s, 0.30f));
+	uint32_t one_minus = fop2(s, SpvOpFSub, c_float(s, 1.0f), weight);
+	uint32_t out[4];
+	for (int c = 0; c < 3; c++) {
+		uint32_t o = composite_extract1(s, tf, orig, (uint32_t)c);
+		uint32_t v = composite_extract1(s, tf, g->uc_scene_color, (uint32_t)c);
+		out[c] = fop2(s, SpvOpFAdd, fop2(s, SpvOpFMul, o, one_minus), fop2(s, SpvOpFMul, v, weight));
+	}
+	out[3] = composite_extract1(s, tf, orig, 3);
+	uint32_t result = nid(s);
+	INS(&s->func, SpvOpCompositeConstruct, tv4, result, out[0], out[1], out[2], out[3]);
+	store(s, g->var_frag_color, result);
+}
 static void emit_sample_nondep(Gen *g, const UsseIter *it, const uint32_t sa_tex_unit[256], int *ok) {
 	Spv *s = &g->s; (void)sa_tex_unit;   /* non-dependent iterator sampling: the unit comes straight from fl->iters[].tex_unit, no SA lookup needed */
 	const int canon = canon_vary && !(it->point_coord && g->var_point) && it->tex_coord_src >= 0 && it->tex_coord_src < 10;
@@ -1552,6 +1603,11 @@ static void emit_sample_nondep(Gen *g, const UsseIter *it, const uint32_t sa_tex
 	} else coord = result2(s, &s->func, SpvOpCompositeConstruct, t_vec(s, t_float(s), 2), u, v);
 	uint32_t texel = srgb_fixup(g, it->tex_unit, (g->snap_mask >> (it->tex_unit & 15) & 1) && !slot_is_cube(g, slot) ? snap_fetch(g, slot, it->tex_unit, u, v)
 	                                               : sample_lod(g, slot, it->tex_unit, coord, 0, 0, grad));
+	if (g->snap_mask & (1u << 16)) {
+		if (it->tex_unit == 8) g->uc_scene_color = texel;
+		else if (it->tex_unit == 10 && !slot_is_cube(g, slot))
+			g->uc_geom_edge = uc_position_edge(g, slot, it->tex_unit, u, v, texel);
+	}
 	for (int c = 0; c < 4; c++) write_comp_f(g, &dst, 0, c, composite_extract1(s, t_float(s), texel, (uint32_t)c), ok);
 }
 /* fragment-shader prologue: pack every iterator (usse_fragment_layout) into PA exactly like
@@ -2338,7 +2394,7 @@ SpirvModule usse_spirv_translate(const UsseProgram *prog, const UsseVertexLayout
 			}
 		}
 		while (ok && nbr) { INS(&s->func, SpvOpBranch, brstack[nbr - 1].merge); INS(&s->func, SpvOpLabel, brstack[nbr - 1].merge); nbr--; }   /* ranges ending at the program's end */
-		if (ok) { if (g.is_fragment) emit_frag_epilogue(&g, &ok); else emit_vert_epilogue(&g, &ok); }
+		if (ok) { if (g.is_fragment) { emit_frag_epilogue(&g, &ok); if (ok) uc_dof_edge_composite(&g); } else emit_vert_epilogue(&g, &ok); }
 		if (g.motion && ok && !tap) store(s, g.var_mv_cur, load(s, t_v4, g.var_pos));   /* (this frame's position, as gl_Position got it) */
 		if (taps > 1 && ok && g.is_fragment) { uint32_t col = load(s, t_v4, g.var_frag_color); if (lerp) lerp_col[tap] = col; else pcf_acc = pcf_acc ? result2(s, &s->func, SpvOpFAdd, t_v4, pcf_acc, col) : col; }
 	}
