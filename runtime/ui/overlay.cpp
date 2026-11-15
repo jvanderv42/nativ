@@ -48,6 +48,7 @@
 #include "gpulock.h"   /* the SDL submit below is the locked one, and ImGui's own submits run under the same lock (render_frame): Homebrew SDL 3.4.16's Metal fence race, see that header */
 #include "overlay.h"
 #include "savedlg.h"
+#include "frame_rates.h"   /* allowed per-game frame rates */
 #include "ui_theme.h"
 #define STBI_NO_STDIO
 #include "third_party/stb/stb_image.h"   /* (its implementation: runtime/media/jpeg.c) */
@@ -67,6 +68,7 @@ extern "C" {
 int net_online(void); const char *net_online_needs(void);
 /* display.c */
 void display_set_paused(int on);
+int display_frame_rates_allowed(void);  /* per-game RECOMP_FRAME_RATES mask */
 /* window.c */
 int window_get_aspect(void); void window_set_aspect(int mode);
 int window_get_fullscreen(void); void window_set_fullscreen(int on);
@@ -269,6 +271,20 @@ static void slider_row(const char *id, float *v, float lo, float hi, const char 
 	ImGui::SetNextItemWidth(-FLT_MIN);
 	ImGui::SliderFloat(id, v, lo, hi, fmt, fl);
 }
+/* Uncharted-only correction, saved with the game's own settings. A process
+ * override takes precedence and disables the UI to avoid a misleading toggle. */
+static void uc_menu_blur_toggle(void) {
+	const char *override_value = std::getenv("RECOMP_UC_MENU_BLUR");
+	const bool forced = override_value && *override_value;
+	bool enabled = forced ? std::atoi(override_value) != 0 : settings_int("uc_menu_blur", 1) != 0;
+	ImGui::BeginDisabled(forced);
+	if (ui::toggle("ucMenuBlur", &enabled)) {
+		settings_set_int("uc_menu_blur", enabled ? 1 : 0);
+		settings_save();
+	}
+	ImGui::EndDisabled();
+	if (forced) ImGui::TextDisabled("Overridden by RECOMP_UC_MENU_BLUR");
+}
 static void page_display(void) {
 	if (!ui::rows_begin("display")) return;
 	ui::row("Resolution", "The game drawn at a multiple of the Vita's 960 × 544. Higher is sharper; 4× and up want a fast GPU.");
@@ -283,12 +299,12 @@ static void page_display(void) {
 	}
 	ui::row("Picture fit", "How the picture fills the window.");
 	{ int am = window_get_aspect(); if (ui::segmented(g_aspect_names, 3, &am)) window_set_aspect(am); }
-	ui::row("Widescreen", window_aspect_supported() ? "Shows more of the game at the sides." : "This game has no widescreen support yet.");
-	{	static const char *const ids[4] = {"native", "21:9", "32:9", "window"}, *const names[4] = {"Off##ar", "21:9##ar", "32:9##ar", "Window##ar"};
+	ui::row("Widescreen", window_aspect_supported() ? "Choose a display shape; wider reveals more at the sides, narrower adapts the view." : "This game has no widescreen support yet.");
+	{	static const char *const ids[6] = {"native", "16:9", "16:10", "21:9", "32:9", "window"}, *const names[6] = {"Off##ar", "16:9##ar", "16:10##ar", "21:9##ar", "32:9##ar", "Window##ar"};
 		char cur[16]; settings_str("aspect_ratio", "native", cur, sizeof cur);
-		int v = 0; for (int i = 0; i < 4; i++) if (!strcmp(cur, ids[i])) v = i;
+		int v = 0; for (int i = 0; i < 6; i++) if (!strcmp(cur, ids[i])) v = i;
 		ImGui::BeginDisabled(!window_aspect_supported());
-		if (ui::segmented(names, 4, &v)) { settings_set_str("aspect_ratio", ids[v]); settings_save(); }
+		if (ui::segmented(names, 6, &v)) { settings_set_str("aspect_ratio", ids[v]); settings_save(); }
 		ImGui::EndDisabled();
 	}
 	if (gfx_gpu_hud_supported()) {
@@ -340,12 +356,19 @@ static void page_display(void) {
 	{	static const char *const names[3] = {"Original##sf", "Soft##sf", "Softer##sf"}; int v = settings_int("shadow_filter", 1);
 		if (ui::segmented(names, 3, &v)) { settings_set_int("shadow_filter", v); settings_save(); }
 	}
+	if (game_option("uc_menu_blur")) {
+		ui::row("Menu blur correction", "Uncharted: smooths the menu and pause-screen blur by removing narrow sharp bands. Enabled by default; does not change gameplay depth of field.");
+		uc_menu_blur_toggle();
+	}
 	ui::rows_end();
 }
 static void page_performance(void) {
 	if (!ui::rows_begin("perf")) return;
 	ui::row("On-screen stats", "Frame rate and timings drawn over the game. F1 cycles them.");
 	{ static const char *const names[3] = {"Off##osd", "FPS##osd", "Full##osd"}; int lvl = metrics_osd_level(); if (ui::segmented(names, 3, &lvl)) set_osd(lvl); }
+	ui::row("Frame-aware presentation", "Only present newly produced game frames, with periodic UI refreshes while idle. Prevents redundant high-rate GPU submissions (helps streaming). Applies to Mailbox/Immediate modes; an explicit RECOMP_WINDOW_FPS_CAP overrides it.");
+	{ bool on = settings_int("window_frame_aware", 1) != 0;
+	  if (ui::toggle("frameAware", &on)) { settings_set_int("window_frame_aware", on ? 1 : 0); settings_save(); } }
 	ui::row("Frame rate now");
 	{ char b[32]; std::snprintf(b, sizeof b, "%.0f fps", metrics_fps()); ImGui::PushFont(nullptr, ImGui::GetFontSize() * 1.6f); ImGui::TextUnformatted(b); ImGui::PopFont(); }
 	ui::rows_end();
@@ -353,8 +376,13 @@ static void page_performance(void) {
 static void page_game(void) {
 	prefs_load();
 	if (!ui::rows_begin("game")) return;
-	ui::row("Frame rate", "60 is experimental: parts of a game timed in fixed 1/30 s steps can run fast.");
-	{ static const char *const names[2] = {"30##fr", "60##fr"}; int v = P.fr >= 60; if (ui::segmented(names, 2, &v)) set_frame_rate(v ? 60 : 30); }
+	ui::row("Frame rate", "Above 30 FPS is experimental. 120 FPS needs game-specific timing support and may affect gameplay.");
+	{ const int allowed = display_frame_rates_allowed(); int rates[3]; const int count = fr_list(allowed, rates);
+	  const int active = fr_effective(P.fr, allowed); int selected = 0;
+	  for (int i = 0; i < count; i++) if (rates[i] == active) selected = i;
+	  const char *labels[3] = {};
+	  for (int i = 0; i < count; i++) labels[i] = rates[i] == 120 ? "120##fr" : rates[i] == 60 ? "60##fr" : "30##fr";
+	  if (ui::segmented(labels, count, &selected)) set_frame_rate(rates[selected]); }
 	if (game_option("fov")) {
 		ui::row("Field of view", "A wider view. 1.00× is the game's own.");
 		ImGui::SetNextItemWidth(-FLT_MIN); if (ImGui::SliderFloat("##fov", &P.fov, 0.75f, 1.5f, "%.2f×")) set_fov(P.fov);
@@ -455,6 +483,13 @@ static void page_controls(void) {
 		ui::row("L and R buttons", "The shoulder pair that is the game's L and R (aim and fire in a shooter). The other pair holds the touch cursor, or is L2 and R2 in a PS TV layout.");
 		{ static const char *const names[2] = {"Triggers (L2 / R2)##sb", "Bumpers (L1 / R1)##sb"}; char cur[16]; int v = !strcmp(settings_str("shoulder_buttons", "triggers", cur, sizeof cur), "bumpers");
 		  if (ui::segmented(names, 2, &v)) { settings_set_str("shoulder_buttons", v ? "bumpers" : "triggers"); settings_save(); } }
+		ui::row("Controller touchpad target", "Choose whether finger input controls the Vita front or rear panel by default. The rear shoulder modifier selects the opposite panel.");
+		{ static const char *const names[2] = {"Front##tp", "Rear##tp"};
+		  int v = settings_int("touchpad_rear_default", 1) != 0;
+		  if (ui::segmented(names, 2, &v)) { settings_set_int("touchpad_rear_default", v); settings_save(); } }
+		ui::row("Touchpad aim and click", "Move your finger to aim without touching the Vita panel. Physically click to press and drag; a quick finger tap still taps. Turn off to restore direct finger touch.");
+		{ bool on = settings_int("touchpad_click_to_touch", 1) != 0;
+		  if (ui::toggle("tpAim", &on)) { settings_set_int("touchpad_click_to_touch", on ? 1 : 0); settings_save(); } }
 		ui::row("Touch cursor speed", "Hold the shoulder pair that isn't L and R, and move a stick: the cursor is a finger on the touch screen (Cross, L or R presses). Move both sticks for two fingers.");
 		ImGui::SetNextItemWidth(-FLT_MIN); if (ImGui::SliderFloat("##tcs", &P.tcs, 0.25f, 3.0f, "%.2f×")) set_tcs(P.tcs);
 		ui::rows_end();
@@ -657,9 +692,25 @@ static void menu_view(void) {
 	if (game_option("scenery_detail")) { ImGui::TextDisabled("Scenery detail"); ImGui::SetNextItemWidth(170); if (ImGui::SliderFloat("##scen", &P.scen, 1.0f, 8.0f, "%.1fx")) set_scen(P.scen); }
 	if (game_option("character_detail")) { ImGui::TextDisabled("Character detail"); ImGui::SetNextItemWidth(170); if (ImGui::SliderFloat("##chr", &P.chr, 1.0f, 8.0f, "%.1fx")) set_chr(P.chr); }
 	if (ImGui::BeginMenu("Frame rate")) {
-		if (ImGui::MenuItem("30", nullptr, P.fr < 60)) set_frame_rate(30);
-		if (ImGui::MenuItem("60 (experimental)", nullptr, P.fr >= 60)) set_frame_rate(60);
+		const int allowed = display_frame_rates_allowed(); int rates[3], count = fr_list(allowed, rates);
+		const int active = fr_effective(P.fr, allowed);
+		for (int i = 0; i < count; i++) {
+			const int rate = rates[i];
+			const char *name = rate == 120 ? "120 (experimental)" : rate == 60 ? "60 (experimental)" : "30";
+			if (ImGui::MenuItem(name, nullptr, active == rate)) set_frame_rate(rate);
+		}
 		ImGui::EndMenu();
+	}
+	if (game_option("uc_menu_blur")) {
+		const char *override_value = std::getenv("RECOMP_UC_MENU_BLUR");
+		const bool forced = override_value && *override_value;
+		bool enabled = forced ? std::atoi(override_value) != 0 : settings_int("uc_menu_blur", 1) != 0;
+		ImGui::BeginDisabled(forced);
+		if (ImGui::MenuItem("Menu blur correction", nullptr, &enabled)) {
+			settings_set_int("uc_menu_blur", enabled ? 1 : 0);
+			settings_save();
+		}
+		ImGui::EndDisabled();
 	}
 	if (ImGui::BeginMenu("On-screen stats")) {
 		static const char *const names[3] = {"Off", "FPS", "Full"};
@@ -672,6 +723,11 @@ static void menu_view(void) {
 }
 static void menu_controls(void) {
 	prefs_load();
+	bool tp_rear = settings_int("touchpad_rear_default", 1) != 0;
+	if (ImGui::MenuItem("Touchpad defaults to rear panel", nullptr, &tp_rear)) { settings_set_int("touchpad_rear_default", tp_rear ? 1 : 0); settings_save(); }
+	bool tp_aim = settings_int("touchpad_click_to_touch", 1) != 0;
+	if (ImGui::MenuItem("Touchpad aim + physical click", nullptr, &tp_aim)) { settings_set_int("touchpad_click_to_touch", tp_aim ? 1 : 0); settings_save(); }
+	ImGui::Separator();
 	ImGui::TextDisabled("Touch cursor speed (hold L1/R1, either stick)");
 	ImGui::SetNextItemWidth(170);
 	if (ImGui::SliderFloat("##tcs", &P.tcs, 0.25f, 3.0f, "%.2fx")) set_tcs(P.tcs);

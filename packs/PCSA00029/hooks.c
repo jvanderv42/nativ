@@ -495,7 +495,7 @@ void recomp_hook_uc_proj(Cpu *c) {
 	 * widen the world camera twice. RECOMP_UC_ASPECT_CALLERS set: this scales those callers instead (tests). */
 	if (!getenv("RECOMP_UC_ASPECT_CALLERS")) return;
 	double k = aspect_widen();
-	if (k <= 1.0 || !uc_aspect_caller(lr)) return;
+	if ((k > 0.99999 && k < 1.00001) || !uc_aspect_caller(lr)) return;
 	float a = (float)(c->vfp.f[4] * k);
 	c->vfp.f[4] = a; c->vfp.f[5] = a;   /* d2, both lanes (the caller duplicates its scalar) */
 }

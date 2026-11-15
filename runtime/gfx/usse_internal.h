@@ -46,6 +46,9 @@ typedef struct {
 	uint64_t raw;
 } UOp;
 
+/* Flow-control return marker used by the USSE subroutine inliner. */
+enum { USSE_NOP_RET = 3 };
+
 /* FPCONSTANT ROM (§2.7): 64 entries, (low word, high word); a translator can emit these as plain
  * SPIR-V constants (the ROM is fixed, not draw state) instead of modelling the bank at all. */
 static const uint32_t usse_fpconst[64][2] = {

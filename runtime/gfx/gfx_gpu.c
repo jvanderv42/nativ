@@ -19,6 +19,7 @@
  */
 #include <SDL3/SDL.h>
 #include "gpulock.h"   /* every SDL submit/fence call below is the locked one: Homebrew SDL 3.4.16's Metal fence race, see that header */
+#include "target_scale.h"  /* native-resolution post-processing targets */
 #include "fsr/fsr.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -77,6 +78,14 @@ static uint32_t n_shader_builds, n_vring_wraps;
  * created; a texture uploaded) and its waits (a target download, a readback, a ring wrap), snapshotted
  * at present (gfx_gpu_last_frame_costs) */
 static int hitch_log(void) { static int v = -1; if (v < 0) { const char *e = getenv("RECOMP_HITCH_LOG"); v = e && *e && atoi(e) > 0; } return v; }
+/* Avoid dozens of blocking stderr writes while a level's textures are first
+ * being uploaded. The per-frame hitch report still records every upload and
+ * its total cost. Opt in to 1 ms individual texture logs when needed. */
+static uint64_t slow_texture_log_us(void) {
+	static int ms = -1;
+	if (ms < 0) { const char *e = getenv("RECOMP_GPU_TEXTURE_TRACE_MS"); ms = e && *e ? atoi(e) : 8; if (ms < 1) ms = 1; }
+	return (uint64_t)ms * 1000ull;
+}
 static uint32_t n_pipe_builds, n_tgt_downloads, n_readback_waits, n_ring_waits;
 static uint64_t t_pipe_build, t_tgt_download, t_readback_wait, t_ring_wait, t_shader_xlate, t_shader_msl, t_shader_compile, t_vfetch_max;
 static uint32_t n_shader_cached;   /* shaders whose MSL came from the cache this frame (msl_cache_get) */
@@ -1252,17 +1261,34 @@ static SDL_GPUTransferBuffer *tring; static uint32_t tring_pos; static uint64_t 
 typedef struct { SDL_GPUFence *f; uint32_t lo, hi; uint64_t lap; } TringUse;
 #define NTRING_USE 256
 static TringUse tring_use[NTRING_USE]; static int ntring_use;
+static uint64_t tring_sweep_count;
+/* Querying every outstanding upload fence on *every* texture caused repeated
+ * driver calls during large upload bursts. Query finished fences periodically,
+ * but always wait for overlap on ring wrap and before the use list fills.
+ * Set RECOMP_GPU_TRING_SWEEP_EVERY=1 to restore the previous query behavior. */
+static unsigned tring_sweep_every(void) {
+	static unsigned n;
+	if (!n) {
+		const char *e = getenv("RECOMP_GPU_TRING_SWEEP_EVERY");
+		int v = e && *e ? atoi(e) : 8;
+		n = (unsigned)(v < 1 ? 1 : v > 64 ? 64 : v);
+	}
+	return n;
+}
 static SDL_GPUTransferBuffer *tring_map_buffer(void) { return tring; }
 static uint8_t *tring_begin(uint32_t bytes, uint32_t *off) {   /* the ring mapped, *off where this upload's bytes go; 0: not through the ring */
 	if (bytes > TRING_BYTES / 4) return 0;
 	if (!tring) { SDL_GPUTransferBufferCreateInfo xci = { .usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD, .size = TRING_BYTES }; if (!(tring = SDL_CreateGPUTransferBuffer(gpu(), &xci))) return 0; }
 	if (tring_pos + bytes > TRING_BYTES) { tring_pos = 0; tring_lap++; }
 	const uint32_t lo = tring_pos, hi = lo + bytes;
+	/* Ownership safety does not rely on proactive fence polling: any reused
+	 * region is checked and waited on regardless of the sweep interval. */
+	const int sweep = (++tring_sweep_count % tring_sweep_every()) == 0 || ntring_use >= NTRING_USE - 16;
 	int k = 0;
 	for (int i = 0; i < ntring_use; i++) {   /* an earlier lap's uploads over this region: finished first (and the finished ones dropped) */
 		TringUse *u = &tring_use[i];
 		if (u->lap < tring_lap && u->lo < hi && u->hi > lo) { uint64_t t0 = us_now(); SDL_WaitForGPUFences(gpu(), true, &u->f, 1); t_ring_wait += us_now() - t0; n_ring_waits++; SDL_ReleaseGPUFence(gpu(), u->f); }
-		else if (SDL_QueryGPUFence(gpu(), u->f)) SDL_ReleaseGPUFence(gpu(), u->f);
+		else if (sweep && SDL_QueryGPUFence(gpu(), u->f)) SDL_ReleaseGPUFence(gpu(), u->f);
 		else tring_use[k++] = *u;
 	}
 	ntring_use = k;
@@ -1486,7 +1512,7 @@ static TexEntry *get_texture(const GfxTexture *t) {
 		if (trace_sync()) fprintf(stderr, "gpu trace: texture %#x fmt %#x %ux%u u%#x re-uploaded: %s (%u of %u pages)\n", t->data, t->format, t->width, t->height, t->u_mode, e->stale ? "a target came down over it and its bytes changed" : "its bytes changed", changed, e->nph);
 		e->stale = 0; n_tex_changed++;
 		uint64_t tu0 = us_now(); upload_texture(e, t); tex_account(e); t_texup += us_now() - tu0;
-		if (hitch_log() && us_now() - tu0 > 1000) fprintf(stderr, "    gpu hitch: texture %#x fmt %#x %ux%u layout %d re-uploaded (%s) in %.2f ms\n", t->data, t->format, t->width, t->height, e->layout, e->bc ? "BC blocks" : "decoded", (us_now() - tu0) / 1e3);
+		if (hitch_log() && us_now() - tu0 > slow_texture_log_us()) fprintf(stderr, "    gpu hitch: texture %#x fmt %#x %ux%u layout %d re-uploaded (%s) in %.2f ms\n", t->data, t->format, t->width, t->height, e->layout, e->bc ? "BC blocks" : "decoded", (us_now() - tu0) / 1e3);
 		return e;
 	}
 	if (e) {   /* same slot, another layout or extent: re-decode in place */
@@ -1535,7 +1561,7 @@ static TexEntry *get_texture(const GfxTexture *t) {
 	t_texhash += us_now() - th0;
 	if (moved && hash_bytes(G(t->data), span) == ch) return e;   /* (still those bytes now the pages are closed: a write in between uploads as usual) */
 	{ uint64_t tu0 = us_now(); upload_texture(e, t); tex_account(e); t_texup += us_now() - tu0;
-	  if (hitch_log() && us_now() - tu0 > 1000) fprintf(stderr, "    gpu hitch: texture %#x fmt %#x %ux%u layout %d uploaded new (%s) in %.2f ms\n", t->data, t->format, t->width, t->height, e->layout, e->bc ? "BC blocks" : "decoded", (us_now() - tu0) / 1e3); }
+	  if (hitch_log() && us_now() - tu0 > slow_texture_log_us()) fprintf(stderr, "    gpu hitch: texture %#x fmt %#x %ux%u layout %d uploaded new (%s) in %.2f ms\n", t->data, t->format, t->width, t->height, e->layout, e->bc ? "BC blocks" : "decoded", (us_now() - tu0) / 1e3); }
 	return e;
 }
 
@@ -1644,26 +1670,18 @@ static int rscale_x = 1;
  * screen's texel density instead of three quarters of it. Every texel-addressed path takes the owner's scale (TargetEntry,
  * DepthEntry and view TexEntry sx, sy): the target's texture, its scenes' viewport, scissor, framebuffer copy and depth
  * surface, its views, uploads, downloads and readbacks, snap_fetch's block, the visibility counts' divisor. */
-static struct { uint32_t w, h; float f; } tscale[8]; static int ntscale = -1;
-static void tscale_init(void) {
-	if (ntscale >= 0) return;
-	ntscale = 0; const char *e = getenv("RECOMP_TARGET_SCALE");
-	while (e && *e && ntscale < 8) {
-		unsigned w, h; float f; int used = 0;
-		if (sscanf(e, "%ux%u:%f%n", &w, &h, &f, &used) == 3 && used > 0 && f >= 1.0f && f <= 4.0f) { tscale[ntscale].w = w; tscale[ntscale].h = h; tscale[ntscale].f = f; ntscale++; }
-		else break;
-		e += used; if (*e == ',') e++;
-	}
-}
-int gfx_gpu_target_scale_supported(void) { tscale_init(); return ntscale > 0; }   /* the game names targets to draw finer (the overlay's "Full-resolution world" row) */
+static TargetScaleRule tscale[TARGET_SCALE_RULES]; static int ntscale = -1;
+static void tscale_init(void) { if (ntscale < 0) ntscale = target_scale_parse(getenv("RECOMP_TARGET_SCALE"), tscale); }
+int gfx_gpu_target_scale_supported(void) { tscale_init(); return ntscale > 0; }
 static void target_scale(uint32_t w, uint32_t h, uint8_t *sx, uint8_t *sy) {
 	tscale_init();
-	int x = rscale_x, y = rscale;
-	if (ntscale > 0 && settings_int("full_res_world", 1)) for (int k = 0; k < ntscale; k++) if (tscale[k].w == w && tscale[k].h == h) {   /* (settings "full_res_world" 0: the game's own resolution; read at each scene: a change applies at once -- targets at the other scale are new entries, the old ones age out) */
-		int a = (int)((float)rscale_x * tscale[k].f + 0.5f), b = (int)((float)rscale * tscale[k].f + 0.5f);
-		if (a > x) x = a; if (b > y) y = b; break;
+	int k = target_scale_of(tscale, ntscale, w, h, rscale, rscale_x,
+	                     ntscale > 0 && settings_int("full_res_world", 1), sx, sy);
+	static uint8_t said[TARGET_SCALE_RULES];
+	if (k >= 0 && tscale[k].f == 0.0f && !said[k]) {
+		said[k] = 1;
+		fprintf(stderr, "    gpu: target %ux%u at original resolution (render scale %dx)\n", w, h, rscale);
 	}
-	*sx = (uint8_t)(x > 8 ? 8 : x); *sy = (uint8_t)(y > 8 ? 8 : y);   /* (8: a 2048-wide target within Metal's 16384 texels) */
 }
 static int any_scaled(void) { tscale_init(); return SCALED || ntscale > 0; }
 #define TSX(e, v) ((uint32_t)(v) * (uint32_t)(e)->sx)
@@ -5556,6 +5574,29 @@ void gfx_gpu_draw(const GfxDraw *d) {
 	sync_draw_reads(d, 0, fp);   /* (the SA words below, the vertex streams the rings copy) */
 	usse_setup_registers(vp, &vdraw, d->vuniforms, d->vubuf);
 	usse_setup_registers(fp, &fdraw, d->funiforms, d->fubuf);
+	/* Uncharted menu blur correction (default enabled via per-game uc_menu_blur setting;
+	 * RECOMP_UC_MENU_BLUR=0|1 overrides for diagnostics). Only the two known DOF composites: GXP hashes 0xb8a9cc91 and 0xaecc460e): the program
+	 * blends sharp and quarter-resolution scene by  x * saturate((|W - y| - z) * w),  g_vDofParams = (x, y, z, w) in its
+	 * default uniform buffer's floats 16..19 (SA 16..19), W the scene-position buffer's fourth channel. The title menu
+	 * sets (1, 10.139, 0.1, 10): everything blurred but a slab 0.2 units deep around y, which is left fully
+	 * sharp -- 3% of the menu's pixels, a stair-shaped sliver across the steps and through the foliage, drawn at the
+	 * render scale against a 180x102 blur. When the in-focus range is that thin (z <= 0.25 with a ramp of w >= 4) the
+	 * focus distance in THIS DRAW's register copy moves out of the scene (-30000, exact in the F16 the secondary program
+	 * packs it to), so the whole scene takes the blur at the game's own strength x. Guest memory, the shader and every
+	 * other state of g_vDofParams (gameplay's wide ranges) are untouched. docs/uncharted-menu-focus-slab.md */
+	if (fp && (usse_program_hash(fp) == 0xb8a9cc91u || usse_program_hash(fp) == 0xaecc460eu)) {   /* the title menu's composite; the in-game one (a bloom input more, the same blend and g_vDofParams place): paused, (1, <the last focus distance>, 0.1, 10) */
+		static int env_override = -1, said;
+		/* Read the process override once; the saved per-game setting remains live. */
+		if (env_override < 0) {
+			const char *e = getenv("RECOMP_UC_MENU_BLUR");
+			env_override = e && *e ? (atoi(e) != 0 ? 2 : 1) : 0;
+		}
+		const int on = env_override ? env_override == 2 : settings_int("uc_menu_blur", 1) != 0;
+		if (on && fdraw.sa[18].f <= 0.25f && fdraw.sa[18].f >= 0.0f && fdraw.sa[19].f >= 4.0f && fdraw.sa[16].f > 0.0f) {
+			fdraw.sa[17].f = -30000.0f;
+			if (!said++) fprintf(stderr, "    gpu: RECOMP_UC_MENU_BLUR: Uncharted menu in-focus slab removed (g_vDofParams z %g, w %g)\n", fdraw.sa[18].f, fdraw.sa[19].f);
+		}
+	}
 	UsseInst scratch;
 	memset(&scratch, 0, sizeof scratch); usse_run_secondary(vp, &scratch, &vdraw);
 	memset(&scratch, 0, sizeof scratch); usse_run_secondary(fp, &scratch, &fdraw);
@@ -6310,7 +6351,7 @@ void gfx_gpu_present(uint32_t base, uint32_t width, uint32_t height, uint32_t pi
 	if (hitch_log()) {   /* this frame's first-use work and waits, for display.c's hitch line; then the counters start the next frame (RECOMP_GPU_STATS, if also on, zeroed them above already: run one or the other) */
 		GfxGpuFrameCosts c = { .draws = __atomic_load_n(&n_gpu_draws, __ATOMIC_RELAXED), .fallback = __atomic_load_n(&n_fallback, __ATOMIC_RELAXED), .shaders = n_shader_builds, .pipes = n_pipe_builds, .tex_uploads = n_tex_uploads, .tex_new = n_tex_new,
 			.tgt_downloads = n_tgt_downloads, .readback_waits = n_readback_waits, .ring_waits = n_ring_waits, .flushes = n_batch_cmd,
-			.t_total = t_total, .t_shader = t_shader, .t_xlate = t_shader_xlate, .t_msl = t_shader_msl, .t_compile = t_shader_compile, .t_pipe = t_pipe_build, .t_texup = t_texup, .t_tgt_download = t_tgt_download,
+			.t_total = t_total, .t_up_decode = t_up_decode, .t_up_xfer = t_up_xfer, .t_up_submit = t_up_submit, .t_shader = t_shader, .t_xlate = t_shader_xlate, .t_msl = t_shader_msl, .t_compile = t_shader_compile, .t_pipe = t_pipe_build, .t_texup = t_texup, .t_tgt_download = t_tgt_download,
 			.t_readback_wait = t_readback_wait, .t_ring_wait = t_ring_wait, .t_vfetch = t_vfetch, .t_tsync = t_tsync, .t_scene_sync = t_scene_sync, .t_vfetch_max = t_vfetch_max, .t_map = t_map, .shaders_cached = n_shader_cached, .skipped = n_async_skips };
 		for (int i = 0; i < n_fallback_why && i < 4; i++) { c.fb_why[i] = fallback_why[i].why; c.fb_n[i] = fallback_why[i].n; }
 		c.nshaders = (uint32_t)nshaders; c.npipes = (uint32_t)npipelines;
@@ -6318,6 +6359,7 @@ void gfx_gpu_present(uint32_t base, uint32_t width, uint32_t height, uint32_t pi
 		__atomic_store_n(&n_gpu_draws, 0, __ATOMIC_RELAXED); __atomic_store_n(&n_fallback, 0, __ATOMIC_RELAXED); n_fallback_why = 0; n_shader_builds = n_vring_wraps = 0; n_tex_uploads = n_tex_bc = 0; n_tex_new = 0; n_batch_cmd = 0;
 		n_pipe_builds = n_tgt_downloads = n_readback_waits = n_ring_waits = 0; n_async_skips = 0;
 		t_total = t_vfetch = t_texhash = t_texup = t_tsync = t_view = t_submit = t_shader = t_pipe = t_bind = t_setup = t_vbuf = t_pass = t_map = t_acq = t_scene_sync = 0;
+		t_up_decode = t_up_xfer = t_up_submit = 0;   /* per-frame upload phase costs for hitch diagnostics */
 		t_pipe_build = t_tgt_download = t_readback_wait = t_ring_wait = t_shader_xlate = t_shader_msl = t_shader_compile = t_vfetch_max = 0; n_shader_cached = 0;
 	}
 	/* RECOMP_SHOT, RECOMP_USSE_PROFILE and (unless done above) window_present all live in gfx_soft_present */

@@ -32,6 +32,7 @@
  *   aspect_ratio  window.c    native | 21:9 | 32:9 | window   a wider view, for games with a camera hook (RECOMP_ASPECT_HOOK=1; hooks.c aspect_widen)
  *   hud_layout    gfx_gpu.c   edges | 16:9 | stretch (default edges)   with a wider view: the 2D elements at their own shape, anchored
  *                             to the screen edge of their third or all to the centre (a 16:9 frame), or stretched to the width; read at each present
+ *   uc_menu_blur gfx_gpu.c   0 | 1 (default 1)          Uncharted-specific menu/pause blur correction (RECOMP_UC_MENU_BLUR overrides)
  *   full_res_world gfx_gpu.c  0 | 1 (default 1)          the buffers a game draws below the screen's resolution at the full one (RECOMP_TARGET_SCALE; read at each scene)
  *   ssao          ssao.c      0 | 1 (default 1)          ambient occlusion on the main 3D scene, for a game that names it (RECOMP_SSAO; RECOMP_SSAO_ON wins)
  *   ssao_strength ssao.c      0..2 (default 1.0)         how dark (read every frame)

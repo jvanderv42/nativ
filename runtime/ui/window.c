@@ -32,6 +32,7 @@
 #include "gpulock.h"   /* every SDL submit/fence call below is the locked one: Homebrew SDL 3.4.16's Metal fence race, see that header */
 #include <pthread.h>
 #include <stdio.h>
+#include "aspect_factor.h"
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -71,9 +72,18 @@ static volatile int touch_down, touch_x, touch_y;   /* the mouse as the front to
  * window_touch_contacts. */
 enum { TP_FINGERS = 2, REAR_Y0 = 108, REAR_Y1 = 889 };
 static volatile int tp_down[TP_FINGERS], tp_port[TP_FINGERS], tp_x[TP_FINGERS], tp_y[TP_FINGERS];
+/* Aim mode separates finger hover from Vita contact; a physical click presses. */
+static int tp_click_held, tp_clicked[TP_FINGERS], tp_moved[TP_FINGERS];
+static int tp_start_x[TP_FINGERS], tp_start_y[TP_FINGERS];
+static uint64_t tp_start_us[TP_FINGERS], tp_tap_until_us[TP_FINGERS];
+static int tp_tap_port[TP_FINGERS], tp_tap_x[TP_FINGERS], tp_tap_y[TP_FINGERS];
+static int tp_aim_mode(void) { return settings_int("touchpad_click_to_touch", 1); }
+static int tp_rear_default(void) { return settings_int("touchpad_rear_default", 1); }
 /* a touchscreen's own fingers (screen_finger): the front panel where each touches the picture, the rear with RB held as it lands */
 enum { ST_FINGERS = 6 };
 static volatile int st_down[ST_FINGERS], st_port[ST_FINGERS], st_x[ST_FINGERS], st_y[ST_FINGERS]; static SDL_FingerID st_id[ST_FINGERS];
+/* Retain a streamed touchscreen tap until the game has sampled it once. */
+static volatile int st_sampled[ST_FINGERS], st_release_pending[ST_FINGERS];
 static volatile int cur_mode;              /* 0 off, 1 front (LB held), 2 rear (RB held) */
 static volatile int cur_down, cur_x[2] = {960, 960}, cur_y[2] = {544, (REAR_Y0 + REAR_Y1) / 2};
 /* Two cursors (two-finger gestures -- Killzone's valves): while a bumper is held, once BOTH sticks have moved the cursor
@@ -87,6 +97,61 @@ static int trig_touch[2];            /* this trigger pressed a cursor touch: no 
 static volatile int mouse_rear_down, mouse_rear_x, mouse_rear_y;
 static int lb_held, rb_held, ltrig_on, rtrig_on;   /* the pair that holds the touch cursor; the pair that is L and R (pad_second, pad_main) */
 static int ptrig[2];                                /* the physical triggers past their press point (hysteresis) */
+/* RECOMP_TOUCH_TRACE=1: window-thread-only diagnostics for the streamed pad.
+ * Counts independent motion events, applied position changes, and displayed
+ * overlay frames. No rendering or input behavior is changed. */
+static int touchpad_active(void);   /* defined below with the touch contacts */
+static int touch_trace_enabled(void) {
+	static int enabled = -1;
+	if (enabled < 0) { const char *e = getenv("RECOMP_TOUCH_TRACE"); enabled = e && *e && *e != '0'; }
+	return enabled;
+}
+static struct {
+	uint64_t start, prev_poll, prev_pad, prev_draw, max_poll_gap, max_pad_gap, max_draw_gap;
+	uint32_t pad_events, pad_moves, pad_changes, stick_events, cursor_changes, draws, loops;
+	int was_active, last_x, last_y, last_tp_x, last_tp_y;
+} touch_trace;
+static void touch_trace_poll(void) {
+	if (!touch_trace_enabled()) return;
+	uint64_t t = now_us();
+	int active_touch = cur_mode || touchpad_active();
+	/* Preserve the previous interval when a touch ends: one final report. */
+	if (!active_touch && !touch_trace.was_active && !touch_trace.start) return;
+	if (!touch_trace.start) {
+		touch_trace.start = t;
+		touch_trace.last_x = cur_mode ? cur_x[cur_mode - 1] : tp_x[0];
+		touch_trace.last_y = cur_mode ? cur_y[cur_mode - 1] : tp_y[0];
+		touch_trace.last_tp_x = tp_x[0]; touch_trace.last_tp_y = tp_y[0];
+	}
+	if (touch_trace.prev_poll && t - touch_trace.prev_poll > touch_trace.max_poll_gap)
+		touch_trace.max_poll_gap = t - touch_trace.prev_poll;
+	touch_trace.prev_poll = t;
+	touch_trace.loops++;
+	int x = cur_mode ? cur_x[cur_mode - 1] : tp_x[0], y = cur_mode ? cur_y[cur_mode - 1] : tp_y[0];
+	if (x != touch_trace.last_x || y != touch_trace.last_y) {
+		touch_trace.cursor_changes++; touch_trace.last_x = x; touch_trace.last_y = y;
+	}
+	if (t - touch_trace.start >= 1000000ull || (!active_touch && touch_trace.was_active)) {
+		double seconds = (t - touch_trace.start) / 1000000.0;
+		if (seconds < 0.001) seconds = 0.001;
+		fprintf(stderr, "    touch trace: active %d mode %d loop %.0f/s (gap %.1f ms), pad %u ev (%u motion, %u changed, gap %.1f ms), stick %u ev, cursor %u changes, overlay %u frames (gap %.1f ms)\n",
+			active_touch, cur_mode, touch_trace.loops / seconds, touch_trace.max_poll_gap / 1000.0,
+			touch_trace.pad_events, touch_trace.pad_moves, touch_trace.pad_changes, touch_trace.max_pad_gap / 1000.0,
+			touch_trace.stick_events, touch_trace.cursor_changes, touch_trace.draws, touch_trace.max_draw_gap / 1000.0);
+		/* Don't carry a gap across inactive periods into a later gesture. */
+		memset(&touch_trace, 0, sizeof touch_trace);
+		if (active_touch) { touch_trace.start = t; touch_trace.prev_poll = t; touch_trace.last_x = x; touch_trace.last_y = y; touch_trace.last_tp_x = tp_x[0]; touch_trace.last_tp_y = tp_y[0]; }
+	}
+	touch_trace.was_active = active_touch;
+}
+static void touch_trace_draw(void) {
+	if (!touch_trace_enabled() || !touch_trace.start) return;
+	uint64_t t = now_us();
+	if (touch_trace.prev_draw && t - touch_trace.prev_draw > touch_trace.max_draw_gap)
+		touch_trace.max_draw_gap = t - touch_trace.prev_draw;
+	touch_trace.prev_draw = t;
+	touch_trace.draws++;
+}
 /* "shoulder_buttons" (shared): "triggers", the default: the triggers are the game's L and R and the bumpers the other pair
  * (the touch cursor; a PS TV's L2/R2); "bumpers": the other way round, as a PS TV's own pad has it. Read with the bindings
  * (kb_reload: at start and as the menu closes, when nothing is held) */
@@ -237,7 +302,7 @@ void window_set_fullscreen(int on) {
 	if (win) SDL_SetWindowFullscreen(win, on != 0);
 	settings_set_int("fullscreen", on != 0); settings_save();
 }
-/* ---- wider aspect ratios (settings "aspect_ratio": native | 21:9 | 32:9 | window): the factor k the game's
+/* ---- adaptable aspect ratios (settings "aspect_ratio": native | 16:9 | 16:10 | 21:9 | 32:9 | window): the factor k the game's
  * horizontal view is widened by -- its camera hook (hooks.c, aspect_widen) builds the projection that
  * much wider into the same 960x544 frame, and the window shows that frame k times wider than native.
  * Only for a game whose conf declares such a hook (RECOMP_ASPECT_HOOK=1 in its RUN_ENV): without one the
@@ -249,10 +314,18 @@ float window_aspect_widen(void) {
 	static const char *env = (const char *)-1; if (env == (const char *)-1) env = getenv("RECOMP_ASPECT");   /* (read once: this runs per draw) */
 	char b[16]; if (env) snprintf(b, sizeof b, "%s", env); else settings_str("aspect_ratio", "native", b, sizeof b);   /* RECOMP_ASPECT wins (headless tests) */
 	const float native = 960.0f / 544.0f;
-	float a = !strcmp(b, "21:9") ? 21.0f / 9.0f : !strcmp(b, "32:9") ? 32.0f / 9.0f : 0;
+	float a = nativ_aspect_preset(b);
 	if (!strcmp(b, "window") && win_pw && win_ph) a = (float)win_pw / (float)win_ph;
 	float k = a > 0 ? a / native : 1.0f;
-	return k < 1.02f ? 1.0f : k > 2.5f ? 2.5f : k;   /* narrower than native: native (letterboxed as before) */
+	/* An opt-out keeps the old 16:9 letterboxing for narrow windows. For a 16:10
+	 * stream (e.g. Astra 2), the Uncharted camera hook must narrow its projection
+	 * together with the displayed frame. Test HUD and touch alignment carefully. */
+	static int allow_narrow = -1;
+	if (allow_narrow < 0) {
+		const char *e = getenv("RECOMP_ALLOW_NARROW_ASPECT");
+		allow_narrow = !e || strcmp(e, "0");
+	}
+	return nativ_aspect_factor(k, allow_narrow);
 }
 /* the visible source sub-rect (sx,sy,sw,sh: fit/stretch show it all; fill crops it, centred, to the
  * window's own aspect) and where it lands in the window (dx,dy,dw,dh) -- source and window sizes in
@@ -385,8 +458,17 @@ int window_touch_contacts(int port, int *keys, int *xs, int *ys, int max) {
 	if (cur_down && cur2_on && cur_mode == port + 1) ADD(3, cur2_x[port], cur2_y[port]);   /* (the second cursor: key 3) */
 	if (port == 0 && flick_down) ADD(4, flick_x, flick_y);   /* (a right-stick flick's swipe: key 4) */
 	if (port == 0 && twist_down) { ADD(5, twist_x[0], twist_y[0]); ADD(6, twist_x[1], twist_y[1]); }   /* (a twist's two fingers: keys 5, 6) */
-	for (int i = 0; i < TP_FINGERS; i++) if (tp_down[i] && tp_port[i] == port) ADD(10 + i, tp_x[i], tp_y[i]);
-	for (int i = 0; i < ST_FINGERS; i++) if (st_down[i] && st_port[i] == port) ADD(20 + i, st_x[i], st_y[i]);   /* (a touchscreen's fingers: keys 20+) */
+	for (int i = 0; i < TP_FINGERS; i++) {
+		if (tp_down[i] && tp_port[i] == port && (!tp_aim_mode() || tp_click_held)) ADD(10 + i, tp_x[i], tp_y[i]);
+		else if (tp_aim_mode() && !tp_down[i] && tp_tap_port[i] == port && now_us() < tp_tap_until_us[i])
+			ADD(10 + i, tp_tap_x[i], tp_tap_y[i]);
+	}
+for (int i = 0; i < ST_FINGERS; i++) if (st_down[i] && st_port[i] == port) {
+		ADD(20 + i, st_x[i], st_y[i]);
+		st_sampled[i] = 1;
+		/* Present a release that arrived before the first game sample. */
+		if (st_release_pending[i]) { st_down[i] = 0; st_release_pending[i] = 0; }
+	}
 	#undef ADD
 	if (n && port >= 0 && port < 2) last_touch_key[port] = keys[0];
 	return n;
@@ -396,12 +478,15 @@ static int touchpad_active(void) { for (int i = 0; i < TP_FINGERS; i++) if (tp_d
 /* everything gamepad touch holds, let go: the menu opened, or the pad went away */
 static void gamepad_touch_release(void) {
 	motion_pause();   /* (and the gyro: the next sample starts a fresh interval) */
-	for (int i = 0; i < TP_FINGERS; i++) tp_down[i] = 0;
+	tp_click_held = 0;
+	for (int i = 0; i < TP_FINGERS; i++) { tp_down[i] = tp_clicked[i] = tp_moved[i] = 0; tp_tap_until_us[i] = 0; }
 	cur_down = 0; cur_mode = 0; lb_held = rb_held = 0; ltrig_on = rtrig_on = 0; ptrig[0] = ptrig[1] = 0;
 	cur2_on = 0; cur_used_l = cur_used_r = 0; cur_cross = cur_trig[0] = cur_trig[1] = 0; trig_touch[0] = trig_touch[1] = 0;
 	twist_pad = 0; twist_down = twist_drag;
 	mouse_rear_down = 0;
-	for (int i = 0; i < ST_FINGERS; i++) st_down[i] = 0;   /* (and the screen's fingers: the menu takes the screen) */
+	for (int i = 0; i < ST_FINGERS; i++) {
+		st_down[i] = st_sampled[i] = st_release_pending[i] = 0;
+	}   /* the menu takes the screen */
 }
 /* A touchscreen (SDL's direct touch devices: a laptop's or a handheld's screen; a trackpad's fingers stay the mouse, unless
  * RECOMP_TOUCH_ANY=1, which takes any touch device's, a Mac trackpad's included, as the screen's: a multi-touch test without a
@@ -433,12 +518,23 @@ static void screen_finger(const SDL_Event *e) {
 	int w = 0, h = 0; SDL_GetWindowSize(win, &w, &h);
 	const float mx = e->tfinger.x * (float)w, my = e->tfinger.y * (float)h;   /* (SDL's finger positions: 0-1 across the window) */
 	int k = -1, free_k = -1;
-	for (int i = 0; i < ST_FINGERS; i++) { if (st_down[i] && st_id[i] == e->tfinger.fingerID) k = i; else if (!st_down[i] && free_k < 0) free_k = i; }
-	if (e->type == SDL_EVENT_FINGER_UP || e->type == SDL_EVENT_FINGER_CANCELED) { if (k >= 0) st_down[k] = 0; return; }
+	for (int i = 0; i < ST_FINGERS; i++) {
+		if (st_down[i] && st_id[i] == e->tfinger.fingerID &&
+		    !(e->type == SDL_EVENT_FINGER_DOWN && st_release_pending[i])) k = i;
+		else if (!st_down[i] && free_k < 0) free_k = i;
+	}
+	if (e->type == SDL_EVENT_FINGER_UP || e->type == SDL_EVENT_FINGER_CANCELED) {
+		if (k >= 0) {
+			if (e->type == SDL_EVENT_FINGER_UP && !st_sampled[k]) st_release_pending[k] = 1;
+			else { st_down[k] = 0; st_release_pending[k] = 0; }
+		}
+		return;
+	}
 	int tx, ty;
 	if (k < 0) {   /* a new finger (a motion of one that landed on the bars is ignored) */
 		if (e->type != SDL_EVENT_FINGER_DOWN || free_k < 0 || !mouse_to_touch(mx, my, 0, &tx, &ty)) return;
 		k = free_k; st_id[k] = e->tfinger.fingerID; st_port[k] = rb_held;
+		st_sampled[k] = st_release_pending[k] = 0;
 	} else if (!mouse_to_touch(mx, my, 1, &tx, &ty)) return;
 	st_x[k] = tx; st_y[k] = st_port[k] ? clampi(ty, REAR_Y0, REAR_Y1) : ty;
 	st_down[k] = 1;
@@ -570,6 +666,16 @@ static uint32_t gtl[3];   /* each one's mip levels (window_present_gpu: more tha
 void window_pixel_size(uint32_t *w, uint32_t *h) { *w = win_pw; *h = win_ph; }
 static uint64_t gready_us[3];   /* when each was handed over (the game's flip, as the GPU backend presents it): RECOMP_LATENCY_LOG */
 static int frames_in_flight = 2;
+/* RECOMP_STREAM_TRACE=1: aggregate window-thread timings once a second. Diagnostic
+ * only: no lock, queue or rendering behavior is changed; times include waits.
+ * The game renderer's lock queue/hold times are separately reported by
+ * RECOMP_WAIT_STATS=10 (runtime/debug/waitstats.c). */
+static int stream_trace_on(void) {
+    static int enabled = -1;
+    if (enabled < 0) { const char *e = getenv("RECOMP_STREAM_TRACE"); enabled = e && *e && *e != '0'; }
+    return enabled;
+}
+
 /* the overlay needs real pixels to blend against, and the GPU-rendered path's frame never otherwise
  * touches the CPU; these two transfer buffers (one each direction -- SDL_GPU's usage hint may pick
  * different memory for them, so one buffer doesn't stand in for both) round-trip it through the
@@ -931,12 +1037,28 @@ void window_run(void *(*fn)(void *), void *arg) {
 	active = 1;
 	Game g = {fn, arg};
 	pthread_t t;
-	pthread_attr_t at; pthread_attr_init(&at); pthread_attr_setstacksize(&at, 64u << 20);
-	pthread_create(&t, &at, game_main, &g);
+	pthread_attr_t at;
+	int thread_status = pthread_attr_init(&at);
+	if (!thread_status) {
+		/* Preserve the default stack as a fallback if a 64 MB stack is rejected. */
+		int stack_status = pthread_attr_setstacksize(&at, 64u << 20);
+		if (stack_status) fprintf(stderr, "window: 64 MB game stack rejected (%d), using default\n", stack_status);
+		thread_status = pthread_create(&t, &at, game_main, &g);
+		pthread_attr_destroy(&at);
+	} else {
+		fprintf(stderr, "window: pthread_attr_init failed (%d), using default attributes\n", thread_status);
+		thread_status = pthread_create(&t, NULL, game_main, &g);
+	}
+	if (thread_status) {
+		fprintf(stderr, "window: unable to start game thread (pthread error %d)\n", thread_status);
+		active = 0;
+		return;  /* do not enter an idle window loop without a running game */
+	}
 	for (;;) {
 		SDL_Event e;
 		finger_script();
 		while (SDL_PollEvent(&e)) {
+			if (touch_trace_enabled() && touch_trace.start && e.type == SDL_EVENT_GAMEPAD_AXIS_MOTION && e.gaxis.axis < 4) touch_trace.stick_events++;
 			/* _exit, not SDL_Quit()+exit(): the game thread is still running and may be mid-call
 			 * into SDL (audio_output, window_present) or guest code; tearing down SDL subsystems
 			 * out from under it raced into a SIGSEGV at a null host function pointer. The OS
@@ -1030,6 +1152,11 @@ void window_run(void *(*fn)(void *), void *arg) {
 				if (b == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER || b == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER) {
 					const int k = b == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER;
 					if (shoulders_swapped) pad_main(pad, k, dn); else pad_second(pad, k, dn);
+				} else if (b == SDL_GAMEPAD_BUTTON_TOUCHPAD) {
+					tp_click_held = dn;
+					if (dn) for (int f = 0; f < TP_FINGERS; f++) if (tp_down[f]) {
+						tp_clicked[f] = 1; tp_tap_until_us[f] = 0;
+					}
 				} else if (b == SDL_GAMEPAD_BUTTON_SOUTH && (cur_mode || cur_down || cur_cross)) {
 					cur_cross = dn && cur_mode;            /* Cross is the touch while a bumper is held */
 					cur_down = cur_mode && (cur_cross || cur_trig[0] || cur_trig[1]);
@@ -1047,13 +1174,41 @@ void window_run(void *(*fn)(void *), void *arg) {
 			if (e.type == SDL_EVENT_GAMEPAD_TOUCHPAD_DOWN || e.type == SDL_EVENT_GAMEPAD_TOUCHPAD_MOTION || e.type == SDL_EVENT_GAMEPAD_TOUCHPAD_UP) {
 				int f = e.gtouchpad.finger;
 				if (e.gtouchpad.touchpad == 0 && f >= 0 && f < TP_FINGERS) {
-					if (e.type == SDL_EVENT_GAMEPAD_TOUCHPAD_UP) tp_down[f] = 0;
-					else {
-						if (e.type == SDL_EVENT_GAMEPAD_TOUCHPAD_DOWN || !tp_down[f]) tp_port[f] = rb_held;   /* the panel is chosen as the finger lands */
-						float u = e.gtouchpad.x < 0 ? 0 : e.gtouchpad.x > 1 ? 1 : e.gtouchpad.x, v = e.gtouchpad.y < 0 ? 0 : e.gtouchpad.y > 1 ? 1 : e.gtouchpad.y;
+					if (touch_trace_enabled()) {
+						uint64_t t = now_us();
+						if (touch_trace.prev_pad && t - touch_trace.prev_pad > touch_trace.max_pad_gap) touch_trace.max_pad_gap = t - touch_trace.prev_pad;
+						touch_trace.prev_pad = t; touch_trace.pad_events++;
+						if (e.type == SDL_EVENT_GAMEPAD_TOUCHPAD_MOTION) touch_trace.pad_moves++;
+					}
+					if (e.type == SDL_EVENT_GAMEPAD_TOUCHPAD_UP) {
+						/* A short stationary finger tap still touches the panel. */
+						if (tp_aim_mode() && tp_down[f] && !tp_clicked[f] && !tp_moved[f] &&
+						    now_us() - tp_start_us[f] <= 250000) {
+							tp_tap_port[f] = tp_port[f]; tp_tap_x[f] = tp_x[f]; tp_tap_y[f] = tp_y[f];
+							tp_tap_until_us[f] = now_us() + 100000;
+						}
+						tp_down[f] = 0;
+					} else {
+						int first = e.type == SDL_EVENT_GAMEPAD_TOUCHPAD_DOWN || !tp_down[f];
+						if (first) {
+							/* Shoulder modifier selects the opposite panel on landing. */
+							/* The pad's panel should agree with the active shoulder cursor,
+							 * including remapped shoulder buttons over streaming. */
+							tp_port[f] = cur_mode ? cur_mode - 1 : tp_rear_default();
+							tp_clicked[f] = tp_click_held; tp_moved[f] = 0;
+							tp_start_us[f] = now_us(); tp_tap_until_us[f] = 0;
+						}
+						float u = e.gtouchpad.x < 0 ? 0 : e.gtouchpad.x > 1 ? 1 : e.gtouchpad.x;
+						float v = e.gtouchpad.y < 0 ? 0 : e.gtouchpad.y > 1 ? 1 : e.gtouchpad.y;
 						tp_x[f] = clampi((int)(u * 1920.f), 0, 1919);
 						tp_y[f] = tp_port[f] ? clampi(REAR_Y0 + (int)(v * (REAR_Y1 - REAR_Y0 + 1)), REAR_Y0, REAR_Y1) : clampi((int)(v * 1088.f), 0, 1087);
+						if (first) { tp_start_x[f] = tp_x[f]; tp_start_y[f] = tp_y[f]; }
+						else {
+							int dx = tp_x[f] - tp_start_x[f], dy = tp_y[f] - tp_start_y[f];
+							if (dx * dx + dy * dy > 55 * 55) tp_moved[f] = 1;
+						}
 						tp_down[f] = 1;
+						if (touch_trace_enabled() && f == 0 && (tp_x[f] != touch_trace.last_tp_x || tp_y[f] != touch_trace.last_tp_y)) { touch_trace.pad_changes++; touch_trace.last_tp_x = tp_x[f]; touch_trace.last_tp_y = tp_y[f]; }
 					}
 				}
 			}
@@ -1318,22 +1473,86 @@ void window_run(void *(*fn)(void *), void *arg) {
 			}
 			was_open = open;
 		}
+		touch_trace_poll();
 		if (overlay_wants_quit()) { extern void host_summary(const char *why); extern void gfx_gpu_quit(void); host_summary("window closed"); gfx_gpu_quit(); _exit(0); }
 		if (overlay_wants_capture()) { extern void gfxcap_request(void); gfxcap_request(); fprintf(stderr, "capture requested (overlay)\n"); }
 
 
 		if (!gpu) { SDL_Delay(1); continue; }
 		if (overlay_game_paused()) { extern void gfx_shader_prep_tick(void); gfx_shader_prep_tick(); }   /* (a paused game doesn't present: the shader warm-up steps on from here, its prep card's too) */
-		if (self_paced) {   /* no vsync wait paces this loop: a present once the game has a new frame, else once a refresh (menus, the overlay); spinning presented ~1200 times a second and slowed the game */
-			const SDL_DisplayMode *dm = SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(win));
-			const uint64_t period = (uint64_t)(1e6 / (dm && dm->refresh_rate > 1 ? dm->refresh_rate : 60.0f));
-			while (!__atomic_load_n(&gnew, __ATOMIC_ACQUIRE) && !__atomic_load_n(&new_frame, __ATOMIC_ACQUIRE) && now_us() - last_paced_us < period) SDL_DelayPrecise(250000);
-			last_paced_us = now_us();
-		}
+        /* RECOMP_WINDOW_FPS_CAP=60 is an opt-in experiment for streaming GPU-lock
+         * contention. The window normally presents at its monitor's refresh rate
+         * (120 Hz on the test PC), even when the game produces only 60 frames/s.
+         * Limit this *window loop* without changing the game's frame-rate target,
+         * SDL GPU locking, or swapchain mode. With no variable, old behavior is
+         * identical. The cap also avoids the early exit on a newly arrived frame
+         * that is intentional in the original self-paced path. */
+        static int window_fps_cap = -1;
+        static uint64_t capped_next_us;
+        if (window_fps_cap < 0) {
+            const char *cap_env = getenv("RECOMP_WINDOW_FPS_CAP");
+            window_fps_cap = cap_env && *cap_env ? atoi(cap_env) : 0;
+            if (window_fps_cap < 1 || window_fps_cap > 240) window_fps_cap = 0;
+            if (window_fps_cap) fprintf(stderr, "    window: diagnostic FPS cap %d (RECOMP_WINDOW_FPS_CAP)\n", window_fps_cap);
+        }
+        if (window_fps_cap) {
+            const uint64_t interval_us = 1000000ull / (uint64_t)window_fps_cap;
+            uint64_t current_us = now_us();
+            /* A missed deadline is discarded rather than scheduling catch-up
+             * presents, so a GPU stall cannot cause a burst of lock acquisitions. */
+            if (!capped_next_us || current_us > capped_next_us + interval_us)
+                capped_next_us = current_us;
+            while (current_us < capped_next_us) {
+                const uint64_t remain_us = capped_next_us - current_us;
+                SDL_DelayPrecise(remain_us > 1000 ? 500000 : remain_us * 1000);
+                current_us = now_us();
+            }
+            capped_next_us = current_us + interval_us;
+        } else if (self_paced) {
+            /* RECOMP_WINDOW_FRAME_AWARE=1: submit the window's newest game frame
+             * promptly, but do not keep re-submitting an unchanged one at the
+             * monitor's refresh rate. A 30 Hz idle/UI refresh keeps ImGui menus,
+             * notifications and touch indicators alive when the game is paused.
+             * Input polling above still runs at ~1 kHz while idle. Importantly
+             * this is only pacing: GPU locking and fence ordering are untouched.
+             * An explicit RECOMP_WINDOW_FPS_CAP takes precedence. */
+            /* Read the setting once per pass so an F10 change takes effect immediately.
+             * The environment remains an explicit diagnostic override. */
+            const char *frame_aware_env = getenv("RECOMP_WINDOW_FRAME_AWARE");
+            const int frame_aware = frame_aware_env && *frame_aware_env
+                ? *frame_aware_env != '0'
+                : settings_int("window_frame_aware", 1);
+            if (frame_aware) {
+                const uint64_t now = now_us();
+                const int has_new_frame =
+                    __atomic_load_n(&gnew, __ATOMIC_ACQUIRE) ||
+                    __atomic_load_n(&new_frame, __ATOMIC_ACQUIRE);
+                /* No new game image: continue servicing SDL events without
+                 * acquiring a GPU command buffer or the renderer mutex. */
+                /* Keep menus responsive at 60 Hz while retaining a 30 Hz
+                 * idle fallback when nothing interactive is displayed. */
+                const uint64_t idle_period_us = (overlay_is_open() || overlay_dialog_active()) ? 16667ull : 33333ull;
+                if (!has_new_frame && now - last_paced_us < idle_period_us) {
+                    SDL_Delay(1);
+                    continue;
+                }
+                last_paced_us = now;
+            } else {   /* original mailbox pacing, unchanged with both options off */
+                const SDL_DisplayMode *dm = SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(win));
+                const uint64_t period = (uint64_t)(1e6 / (dm && dm->refresh_rate > 1 ? dm->refresh_rate : 60.0f));
+                while (!__atomic_load_n(&gnew, __ATOMIC_ACQUIRE) && !__atomic_load_n(&new_frame, __ATOMIC_ACQUIRE) && now_us() - last_paced_us < period) SDL_DelayPrecise(250000);
+                last_paced_us = now_us();
+            }
+        }
 		uint64_t t_blit0 = now_us();
+        const int tracing = stream_trace_on();
+        /* These accumulators belong exclusively to the window thread. */
+        static uint64_t trace_at, trace_n, trace_cmd, trace_fence, trace_lock, trace_sweep, trace_swap, trace_submit;
+        uint64_t trace_fence_start = 0, trace_lock_start = 0, trace_sweep_start = 0, trace_swap_start = 0, trace_submit_start = 0;
 		SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(gpu);
 		if (!cmd) continue;
-		uint64_t t_blit1 = now_us();   /* the swapchain wait below is vsync, not a cost metrics.c should count */
+		uint64_t t_blit1 = now_us();
+        if (tracing) trace_cmd += t_blit1 - t_blit0;   /* the swapchain wait below is vsync, not a cost metrics.c should count */
 		/* this loop's frame two submits back is finished before SDL's acquire below looks at its own
 		 * in-flight fence (SDL allows two frames in flight: that fence is this frame's or an older one):
 		 * a locked poll of this loop's own fence for it, then the sweep that retires it from SDL's
@@ -1342,8 +1561,10 @@ void window_run(void *(*fn)(void *), void *arg) {
 		 * host's lock itself; see gpulock.h. The pacing is what it was: the acquire's wait finds the
 		 * fence done and blocks only in nextDrawable, for vsync, as before. */
 		static SDL_GPUFence *frame_fence[3]; static int frame_fi;
+        if (tracing) trace_fence_start = now_us();
 		{ int k = (frame_fi + 3 - frames_in_flight) % 3;   /* the submit SDL's acquire will look at: frames_in_flight back */
 		  if (frame_fence[k]) { SDL_WaitForGPUFences(gpu, true, &frame_fence[k], 1); SDL_ReleaseGPUFence(gpu, frame_fence[k]); frame_fence[k] = 0; } }
+        if (tracing) trace_fence += now_us() - trace_fence_start;
 		/* this loop's SDL_GPU calls under the renderer's lock (gfx_dispatch.c), with Vulkan: SDL's Vulkan backend (3.4.16) isn't
 		 * safe against this thread recording and submitting while the renderer creates, records and submits on others. With
 		 * GPU transfers and snapshots on (gfx_gpu.c), which make and copy more each frame, Killzone crashed inside SDL in this
@@ -1352,14 +1573,20 @@ void window_run(void *(*fn)(void *), void *arg) {
 		 * RECOMP_WINDOW_LOCK=0|1 picks */
 		extern void gfx_lock_enter(void), gfx_lock_leave(void);
 		static int wlock = -1; if (wlock < 0) { const char *e = getenv("RECOMP_WINDOW_LOCK"), *dv = SDL_GetGPUDeviceDriver(gpu); wlock = e && *e ? *e != '0' : dv && !strcmp(dv, "vulkan"); }
+        if (tracing) trace_lock_start = now_us();
 		if (wlock) gfx_lock_enter();
+        if (tracing) { trace_lock += now_us() - trace_lock_start; trace_sweep_start = now_us(); }
 		gpu_sweep(gpu);
+        if (tracing) trace_sweep += now_us() - trace_sweep_start;
 		if (wlock && !self_paced) gfx_lock_leave();   /* (vsync: the acquire waits a refresh, outside the lock) */
 		SDL_GPUTexture *swap = 0;
 		uint32_t ww = 0, wh = 0;
+        if (tracing) trace_swap_start = now_us();
 		int got_swap = SDL_WaitAndAcquireGPUSwapchainTexture(cmd, win, &swap, &ww, &wh);
 		uint64_t t_blit2 = now_us();
+        if (tracing) { trace_swap += t_blit2 - trace_swap_start; trace_lock_start = now_us(); }
 		if (wlock && !self_paced) gfx_lock_enter();
+        if (tracing && !self_paced) trace_lock += now_us() - trace_lock_start;
 		if (got_swap && ww && wh) { win_pw = ww; win_ph = wh; }
 		/* the frame to show, picked after the drawable wait: whatever the game flipped while this loop
 		 * waited for vsync goes out now, not a refresh later */
@@ -1426,9 +1653,17 @@ void window_run(void *(*fn)(void *), void *arg) {
 			OverlayMark mk[TP_FINGERS + ST_FINGERS + 6]; int nm = 0; float rear[4] = {0, 0, 0, 0};
 			if (flick_down) { touch_to_point(flick_x, flick_y, &mk[nm].x, &mk[nm].y); mk[nm].rear = 0; mk[nm].pressed = 1; mk[nm].cursor = 0; nm++; }
 			if (twist_down) for (int i = 0; i < 2; i++) { touch_to_point(twist_x[i], twist_y[i], &mk[nm].x, &mk[nm].y); mk[nm].rear = 0; mk[nm].pressed = 1; mk[nm].cursor = 0; nm++; }
-			if (cur_mode) { touch_to_point(cur_x[cur_mode - 1], cur_y[cur_mode - 1], &mk[nm].x, &mk[nm].y); mk[nm].rear = cur_mode == 2; mk[nm].pressed = cur_down; mk[nm].cursor = 1; nm++; }
-			if (cur_mode && cur2_on) { touch_to_point(cur2_x[cur_mode - 1], cur2_y[cur_mode - 1], &mk[nm].x, &mk[nm].y); mk[nm].rear = cur_mode == 2; mk[nm].pressed = cur_down; mk[nm].cursor = 1; nm++; }
-			for (int i = 0; i < TP_FINGERS; i++) if (tp_down[i]) { touch_to_point(tp_x[i], tp_y[i], &mk[nm].x, &mk[nm].y); mk[nm].rear = tp_port[i]; mk[nm].pressed = 1; mk[nm].cursor = 0; nm++; }
+			/* Shoulder modifiers alone must not draw a centered cursor.
+			 * Show the stick-controlled marker only once a stick has actually
+			 * moved, and hide it during DS4 touchpad interaction to avoid a
+			 * duplicate crosshair. Touch contacts remain unchanged. */
+			if (cur_mode && !touchpad_active() && (cur_used_l || cur_used_r)) { touch_to_point(cur_x[cur_mode - 1], cur_y[cur_mode - 1], &mk[nm].x, &mk[nm].y); mk[nm].rear = cur_mode == 2; mk[nm].pressed = cur_down; mk[nm].cursor = 1; nm++; }
+			if (cur_mode && cur2_on && !touchpad_active() && (cur_used_l || cur_used_r)) { touch_to_point(cur2_x[cur_mode - 1], cur2_y[cur_mode - 1], &mk[nm].x, &mk[nm].y); mk[nm].rear = cur_mode == 2; mk[nm].pressed = cur_down; mk[nm].cursor = 1; nm++; }
+			for (int i = 0; i < TP_FINGERS; i++) if (tp_down[i]) {
+				touch_to_point(tp_x[i], tp_y[i], &mk[nm].x, &mk[nm].y);
+				mk[nm].rear = tp_port[i]; mk[nm].pressed = !tp_aim_mode() || tp_click_held;
+				mk[nm].cursor = tp_aim_mode(); nm++;
+			}
 			for (int i = 0; i < ST_FINGERS; i++) if (st_down[i] && st_port[i]) { touch_to_point(st_x[i], st_y[i], &mk[nm].x, &mk[nm].y); mk[nm].rear = 1; mk[nm].pressed = 1; mk[nm].cursor = 0; nm++; }   /* (a rear touch from the screen: the finger isn't where it lands) */
 			if (mt) { touch_to_point(mtx, mouse_rear_down ? clampi(mty, REAR_Y0, REAR_Y1) : mty, &mk[nm].x, &mk[nm].y); mk[nm].rear = mouse_rear_down; mk[nm].pressed = touch_down || mouse_rear_down; mk[nm].cursor = 1; nm++; }
 			else if (mouse_rear_down) { touch_to_point(mouse_rear_x, mouse_rear_y, &mk[nm].x, &mk[nm].y); mk[nm].rear = 1; mk[nm].pressed = 1; mk[nm].cursor = 0; nm++; }
@@ -1437,8 +1672,11 @@ void window_run(void *(*fn)(void *), void *arg) {
 			for (int i = 0; i < ST_FINGERS; i++) rear_in_play |= st_down[i] && st_port[i];
 			if (rear_in_play) { float x0, y0, x1, y1; touch_to_point(0, REAR_Y0, &x0, &y0); touch_to_point(1920, REAR_Y1 + 1, &x1, &y1); rear[0] = x0; rear[1] = y0; rear[2] = x1 - x0; rear[3] = y1 - y0; }
 			overlay_marks(cmd, swap, ww, wh, dt, mk, nm, rear);
+			touch_trace_draw();
 		}
+        if (tracing) trace_submit_start = now_us();
 		frame_fence[frame_fi] = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd); frame_fi = (frame_fi + 1) % 3;   /* vsync via the swapchain paces this loop; the fence is for the poll above, frames_in_flight on */
+        if (tracing) trace_submit += now_us() - trace_submit_start;
 		if (wlock) gfx_lock_leave();
 		uint64_t t_blit3 = now_us();
 		{	/* each newly shown GPU frame: the flip -> submit time, plus the compositor and scan-out estimate,
@@ -1464,6 +1702,21 @@ void window_run(void *(*fn)(void *), void *arg) {
 			}
 			last_shown = gshow;
 		}
+        if (tracing) {
+            ++trace_n;
+            if (!trace_at) trace_at = t_blit3;
+            if (t_blit3 - trace_at >= 1000000 && trace_n) {
+                fprintf(stderr, "    stream trace: window %.1f fps (%llu frames): cmd %.2f, fence %.2f, renderer-lock acquire %.2f, sweep %.2f, swapchain acquire %.2f, submit %.2f ms/frame; total %.1f s\n",
+                    (double)trace_n * 1000000.0 / (double)(t_blit3 - trace_at),
+                    (unsigned long long)trace_n, trace_cmd / (double)trace_n / 1000.0,
+                    trace_fence / (double)trace_n / 1000.0, trace_lock / (double)trace_n / 1000.0,
+                    trace_sweep / (double)trace_n / 1000.0, trace_swap / (double)trace_n / 1000.0,
+                    trace_submit / (double)trace_n / 1000.0,
+                    (double)(t_blit3 - trace_at) / 1000000.0);
+                trace_n = trace_cmd = trace_fence = trace_lock = trace_sweep = trace_swap = trace_submit = 0;
+                trace_at = t_blit3;
+            }
+        }
 		metrics_window_frame((t_blit1 - t_blit0) + (t_blit3 - t_blit2));   /* upload + blit/submit; (t_blit2 - t_blit1) is the vsync wait, excluded */
 
 		char title[160];

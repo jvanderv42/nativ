@@ -6,6 +6,8 @@
 #include <time.h>
 #include <pthread.h>
 #include "hle.h"
+#include "memblock_holes.h"
+#include "memblock_budget.h"
 
 /* ---- kernel: time, memory blocks (threads and locks: kernel.c) */
 /* the game's clock: display.c's guest_time_us (the host's monotonic clock, or the fixed test clock) */
@@ -20,45 +22,46 @@ static uint32_t blocks[MAX_BLOCKS][2];
 static uint32_t block_type[MAX_BLOCKS];   /* the SceKernelMemBlockType it was allocated with (GetMemBlockInfoByAddr reports it) */
 static int nblocks;
 static pthread_mutex_t block_lock = PTHREAD_MUTEX_INITIALIZER;   /* blocks[] and holes[]: games allocate on any thread */
-/* a freed block's guest memory, for the next block that fits (best fit, split; neighbours merged). guest_alloc is a bump
- * allocator with no free, and it used to be the only source: Killzone takes ~200 MB of new blocks at every level load and
- * movie (its render-target pools, VM heaps) and frees the old ones, so a long session walked the 1.75 GB heap towards
- * "guest heap exhausted" -- its level 1 -> 2 transition on Linux had reached 0x3b5..., five or six loads from the end. A
- * console's kernel reuses the memory the same way. Bases and sizes are page-aligned (sizes rounded up: the next block
- * starts at a page boundary past the end anyway). */
-#define MAX_HOLES 1024
-static uint32_t holes[MAX_HOLES][2];
-static int nholes;
-static uint32_t hole_take(uint32_t size) {
-	int best = -1;
-	for (int i = 0; i < nholes; i++) if (holes[i][1] >= size && (best < 0 || holes[i][1] < holes[best][1])) best = i;
-	if (best < 0) return 0;
-	const uint32_t base = holes[best][0];
-	if (holes[best][1] == size) holes[best][0] = holes[--nholes][0], holes[best][1] = holes[nholes][1];
-	else holes[best][0] += size, holes[best][1] -= size;
-	return base;
-}
-static void hole_put(uint32_t base, uint32_t size) {
-	for (int i = 0; i < nholes; i++) {   /* merged with a neighbour on either side (then the merged hole is put back) */
-		if (holes[i][0] + holes[i][1] == base || base + size == holes[i][0]) {
-			if (holes[i][0] < base) base = holes[i][0];
-			size += holes[i][1];
-			holes[i][0] = holes[--nholes][0]; holes[i][1] = holes[nholes][1];
-			hole_put(base, size); return;
+/* Aligned guest memory reuse is provided by memblock_holes.h.
+ * Vita memory-budget emulation is opt-in for controlled game compatibility testing. */
+static uint64_t user_used;
+static uint64_t selected_budget(void) {
+	static uint64_t budget = UINT64_MAX;
+	static int initialized;
+	if (!initialized) {
+		initialized = 1;
+		const char *e = getenv("RECOMP_VITA_USER_MEMORY_MB");
+		if (e && *e) {
+			char *end = 0;
+			unsigned long mb = strtoul(e, &end, 10);
+			if (end != e && !*end && mb >= 1 && mb <= 4096)
+				budget = (uint64_t)mb << 20;
 		}
 	}
-	if (nholes < MAX_HOLES) { holes[nholes][0] = base; holes[nholes][1] = size; nholes++; }   /* (else that memory stays unused) */
+	return budget;
 }
-static uint32_t page_up(uint32_t n) { return (n + 4095u) & ~4095u; }
 static void h_alloc_block(Cpu *c) {   /* (name, type, size, opt) */
 	if (!A2) { RET(0x80020001u); return; }   /* an empty block fails, as on the console (illegal size) */
 	pthread_mutex_lock(&block_lock);
+	if (!memblock_fits(A1, A2, user_used, selected_budget())) {
+		pthread_mutex_unlock(&block_lock);
+		RET(MEMBLOCK_ERROR_NO_MEMORY); return;
+	}
 	int slot = -1;
 	for (int i = 0; i < nblocks; i++) if (!blocks[i][1]) { slot = i; break; }   /* a freed slot first */
 	if (slot < 0) { if (nblocks >= MAX_BLOCKS) { pthread_mutex_unlock(&block_lock); RET(0x80020001u); return; } slot = nblocks++; }
-	uint32_t size = A2, base = hole_take(page_up(size));
+	/* Honor Vita block alignment and recycle matching freed guest memory. */
+	uint32_t align = 4096, ty = A1;
+	if ((ty & 0x0f000000u) == 0x09000000u) align = 0x40000;
+	else if ((ty & 0x0f000000u) == 0x0c000000u || (ty & 0x0f000000u) == 0x0d000000u) align = 0x100000;
+	if (A3 && RD32(A3) >= 12 && (RD32(A3 + 4) & 4u)) {
+		uint32_t requested = RD32(A3 + 8);
+		if (requested > align && !(requested & (requested - 1))) align = requested;
+	}
+	uint32_t size = A2, base = hole_take(page_up(size), align);
 	const int reused = base != 0;
-	if (!base) base = guest_alloc(size, 4096);
+	if (!base) base = guest_alloc(size, align);
+	if (memblock_takes_user(A1)) user_used += A2;
 	blocks[slot][0] = base; blocks[slot][1] = size; block_type[slot] = A1;
 	pthread_mutex_unlock(&block_lock);
 	memset(G(base), 0, size);
@@ -69,6 +72,7 @@ static void h_free_block(Cpu *c) {   /* (uid) */
 	uint32_t i = A0 - 0x10000;
 	pthread_mutex_lock(&block_lock);
 	if (i >= (uint32_t)nblocks || !blocks[i][1]) { pthread_mutex_unlock(&block_lock); RET(0x80020001u); return; }
+	if (memblock_takes_user(block_type[i])) user_used -= blocks[i][1];
 	hole_put(blocks[i][0], page_up(blocks[i][1]));
 	blocks[i][1] = 0;
 	pthread_mutex_unlock(&block_lock);
