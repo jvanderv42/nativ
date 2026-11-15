@@ -4007,8 +4007,35 @@ static void bind_unit(const GfxTexture *tex, int unit, SDL_GPUTextureSamplerBind
 		if (!tg && st) *srgb_enc |= 1u << unit;
 	}
 	if (trace_sync() && tex) fprintf(stderr, "gpu trace: draw %u %s %#x slot %d unit %d tex %#x fmt %#x %ux%u u%#x -> %s%s\n", n_gpu_draws, stage, prog, slot, unit, tex->data, tex->format, tex->width, tex->height, tex->u_mode, src_target ? "target" : te && te->view_src ? "view" : te ? "texture" : "dummy", te && !te->view_src && tex_wide(tex->format) ? " (wide)" : "");
-	b->sampler = te ? tex_sampler(te, tex->min_filter, tex->mag_filter, tex->u_mode & 15, tex->v_mode & 15, (int)GFX_TEX_MIP_LINEAR(tex->format))
-	                : tex_sampler(&textures[0], tex ? tex->min_filter : 0, tex ? tex->mag_filter : 0, tex ? (tex->u_mode & 15) : 2, tex ? (tex->v_mode & 15) : 2, tex ? (int)GFX_TEX_MIP_LINEAR(tex->format) : 0);
+	/* Diagnostic ONLY: Uncharted's g_vDofParams composition program (0x1fa2aa48).
+	 * The GXP's g_tEngineSampler0/1/2 correspond to fragment units 8/9/10:
+	 * 8 = 720x408 HDR scene (point), 9 = 180x102 post-effect (linear),
+	 * 10 = 720x408 scene data (point). Alter just one sampler's filtering to
+	 * determine whether hard mask edges arise during sampling rather than
+	 * from the 180x102 source. No other shader or input is changed.
+	 * RECOMP_UC_DOF_SAMPLER=depth-linear|scene-linear|blur-point
+	 * Unset (the default) preserves the game's original sampler modes. */
+	int min_filter = tex ? tex->min_filter : 0, mag_filter = tex ? tex->mag_filter : 0;
+	if (stage[0] == 'f' && prog == 0x1fa2aa48u && tex && tex->data) {
+		static int mode = -1, reported[4];
+		if (mode == -1) {
+			const char *e = getenv("RECOMP_UC_DOF_SAMPLER");
+			mode = e && !strcmp(e, "depth-linear") ? 1 :
+			       e && !strcmp(e, "scene-linear") ? 2 :
+			       e && !strcmp(e, "blur-point") ? 3 : 0;
+			if (e && *e && !mode) fprintf(stderr, "    gpu: unknown RECOMP_UC_DOF_SAMPLER='%s' (using original filtering)\n", e);
+		}
+		if ((mode == 1 && unit == 10 && tex->width == 720 && tex->height == 408) ||
+		    (mode == 2 && unit == 8 && tex->width == 720 && tex->height == 408) ||
+		    (mode == 3 && unit == 9 && tex->width == 180 && tex->height == 102)) {
+			min_filter = mag_filter = mode == 3 ? 0 : 1;
+			if (reported[mode]++ < 4)
+				fprintf(stderr, "    gpu: Uncharted DOF shader sampler %d source %#x %ux%u: diagnostic filtering %s\n",
+				        unit, tex->data, tex->width, tex->height, mode == 3 ? "point" : "linear");
+		}
+	}
+	b->sampler = te ? tex_sampler(te, min_filter, mag_filter, tex->u_mode & 15, tex->v_mode & 15, (int)GFX_TEX_MIP_LINEAR(tex->format))
+	                : tex_sampler(&textures[0], min_filter, mag_filter, tex ? (tex->u_mode & 15) : 2, tex ? (tex->v_mode & 15) : 2, tex ? (int)GFX_TEX_MIP_LINEAR(tex->format) : 0);
 }
 /* ---------------------------------------------------------------- the draw batch
  * A scene's draws go to the GPU together: gfx_gpu_draw packs each draw's vertex records and indices
