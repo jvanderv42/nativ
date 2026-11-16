@@ -9,7 +9,7 @@ Ported from [frankyfife/nativ_ff](https://github.com/frankyfife/nativ_ff), with 
 ## Version behavior
 
 - **1.00:** Existing main-fork graphics/touch/120 FPS/audio fixes, plus puzzle completion and chapter unlock actions.
-- **1.03:** Reference fork's function/instruction hook map, guest addresses, 1.03 seed, and libgxm wait safeguard. Puzzle completion and chapter unlock are wired into the in-game Game menu.
+- **1.03:** Reference fork's function/instruction hook map, guest addresses, 1.03 seed, and libgxm wait safeguard. Only puzzle completion is wired into the Game menu; chapter unlock is intentionally excluded.
 - The 1.00-specific gunfire early-stop hook addresses have **not** been mapped for 1.03. The 1.03 Game menu does not advertise this fix. Likewise, the menu-blur toggle is held back until 1.03 shaders are checked. Neither should be assumed fixed on 1.03.
 
 ## How to test
@@ -19,18 +19,16 @@ Ported from [frankyfife/nativ_ff](https://github.com/frankyfife/nativ_ff), with 
 3. Provide your own properly decrypted 1.03 update/game files and recompile Uncharted under that installation. The expected 1.03 `uncharted.self.elf` SHA-256 in the reference pack is `661457de5a4192fad214fba8d9a3e627faeeed671502eacf0f702f00268ad33b`.
 4. First test a clean load into the title menu, load a save and run gameplay at 30 FPS. Then verify 60 and 120 FPS, touchpad/touchscreen, cutscenes, reloading/death and presentation changes.
 5. Open any supported puzzle. Use **F10 → Game → Complete the open puzzle → Do it**, **F3**, or **Back + R1**. The action requests the game's own `ForceComplete` on its game thread; verify that the puzzle completes and the story proceeds, rather than merely dismissing the UI.
-6. Test puzzle cancellation with no puzzle open (should present a notification), and verify the control is not present in other games. Test the optional **Unlock every chapter** separately on a disposable save, because it modifies chapter-completion records.
+6. Test puzzle cancellation with no puzzle open (should present a notification), and verify the control is not present in other games. The **Unlock every chapter** action is intentionally excluded.
 7. Regression-test Uncharted 1.00 and Killzone before considering any merge.
 
-### Shader-bundle compatibility
+### Native 1.03 shader support (Option B)
 
-The reference port reports 1.03's updated shader bundles can cause software fallback and mispositioned skinned attachments. `dev/uc_shaders103.py` (imported unchanged from the reference fork) prepares an **output copy** of your own 1.03 `patch.bin` using the two shaders bundles from your own 1.00 `gamedata.bin`:
+Use **unmodified version 1.03 shader bundles**. Do not copy 1.00 shader binaries into 1.03 `patch.bin`.
 
-```powershell
-python dev/uc_shaders103.py <path-to-1.00-gamedata.bin> <path-to-1.03-patch.bin> <output-patch.bin>
-```
+The reference fork's `dev/uc_shaders103.py` helper was a compatibility workaround: it constructed a modified copy of the 1.03 update, replacing `game/bspsh.bin` (fragment shaders) and `game/bsvsh.bin` (vertex shaders) with the original 1.00 bundles. It did not translate the new shaders or implement the blur correction on native 1.03 assets. That helper is removed from this experimental branch because this project is pursuing native 1.03 support.
 
-Back up both inputs. Do **not** overwrite the original update during initial testing. The script is a manual compatibility tool, not an automatic importer or proof that every scene renders correctly; compare with unmodified 1.03 shader assets first if diagnosing rendering differences. No game data is included in this repository.
+Start by recompiling 1.03 with its original assets. Collect shader diagnostics/captures to identify the 1.03 title-menu and pause-menu composite programs and confirm their uniform layout. Adapt the narrowly scoped blur correction only after identifying the exact shaders. The 1.03 blur toggle remains unavailable until that validation passes. Document any software-shader fallback, attachment misalignment, or unexpected rendering separately.
 
 ### Evidence required before merging
 
