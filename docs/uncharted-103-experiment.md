@@ -22,6 +22,14 @@ Ported from [frankyfife/nativ_ff](https://github.com/frankyfife/nativ_ff), with 
 6. Test puzzle cancellation with no puzzle open (should present a notification), and verify the control is not present in other games. The **Unlock every chapter** action is intentionally excluded.
 7. Regression-test Uncharted 1.00 and Killzone before considering any merge.
 
+## Native shader translator investigation — November 16, 2026
+
+The user's unmodified 1.03 game launches on the Vulkan GPU backend (RTX 5090), but several *native* 1.03 vertex programs fail SPIR-V translation with `LDST base register 1.6 isn't formed from an SA pointer`. Confirmed program addresses in sessions: `0x230a7b48`, `0x230a6b08`, `0x230d21c8`, `0x23091dc8`, `0x230907c8`. The renderer then falls back to software for affected draws, repeatedly downloading render targets; slow gameplay and poor graphics follow. This is not proof that all shader programs or the GPU backend are software-rendered.
+
+The experimental branch adds **read-only shader translation diagnostics** behind `RECOMP_UC103_LDST_TRACE=1` in `runtime/gfx/usse_spirv.c`. This reports decoded instructions and marks the last writer of the LDST base register, capped at 32 failures. It does not fix or bypass the unsupported instruction. With the newest experimental distribution, capture a fresh session on native 1.03 shaders using that environment setting, entering gameplay where the failure occurs. Compare the `uc103 ldst:` output to `usse.c`'s CPU interpreter and develop a narrowly scoped SA-pointer origin rule only when the required provenance is verified. Validate with the already provided VFC captures and new test runs before accepting a translator change.
+
+Maintain the proven 1.00 gameplay and AK47 behavior; do not merge to `main` until user approval. The 1.03 AK47 sound-control mapping and native 1.03 menu-blur shader mapping remain separate subsequent work.
+
 ### Native 1.03 shader support (Option B)
 
 Use **unmodified version 1.03 shader bundles**. Do not copy 1.00 shader binaries into 1.03 `patch.bin`.

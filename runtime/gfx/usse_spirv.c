@@ -1220,6 +1220,28 @@ static int ldst_pointer_sa(const UOp *code, int i) {
 	}
 	return -1;
 }
+/* Diagnostic only: capture LDST pointer provenance when 1.03 shaders cannot
+ * translate. It does not change GPU or software rendering. Enable with
+ * RECOMP_UC103_LDST_TRACE=1; cap diagnostics across asynchronous workers. */
+static void trace_ldst_origin(const UsseProgram *prog, const UOp *code, int n, int i) {
+	if (!getenv("RECOMP_UC103_LDST_TRACE")) return;
+	static unsigned reports;
+	if (__atomic_fetch_add(&reports, 1u, __ATOMIC_RELAXED) >= 32u) return;
+	const UOp *bad = &code[i];
+	fprintf(stderr, "    uc103 ldst: shader=%#x instruction=%d/%d base=%u.%u SA=%d raw=%#llx\n",
+	        usse_program_hash(prog), i, n, bad->s0.bank, bad->s0.num,
+	        ldst_pointer_sa(code, i), (unsigned long long)bad->raw);
+	const int first = i > 24 ? i - 24 : 0;
+	for (int j = first; j <= i; j++) {
+		const UOp *op = &code[j];
+		fprintf(stderr, "    uc103 ldst:  [%02d] op=%u sub=%u/%u/%u mask=%#x reps=%u dst=%u.%u src=%u.%u,%u.%u,%u.%u raw=%#llx%s\n",
+		        j, op->op, op->sub, op->sub2, op->sub3, op->mask, op->reps,
+		        op->dst.bank, op->dst.num, op->s0.bank, op->s0.num,
+		        op->s1.bank, op->s1.num, op->s2.bank, op->s2.num,
+		        (unsigned long long)op->raw,
+		        j < i && writes_word(op, bad->s0.bank, bad->s0.num) ? " [base writer]" : "");
+	}
+}
 static uint32_t sa_win_comp(Gen *g, int w, int comp) {   /* UsseDrawUniforms.win[w][comp], member 2 of the SA block */
 	Spv *s = &g->s; uint32_t id = nid(s);
 	INS(&s->func, SpvOpAccessChain, g->ptr_sa_u, id, g->var_sa, c_uint(s, 2), c_uint(s, (uint32_t)w), c_uint(s, (uint32_t)comp));
@@ -2330,7 +2352,11 @@ SpirvModule usse_spirv_translate(const UsseProgram *prog, const UsseVertexLayout
 			default: ok = 0; break;
 			}
 			if (pred_merge) { INS(&s->func, SpvOpBranch, pred_merge); INS(&s->func, SpvOpLabel, pred_merge); }
-			if (!ok) snprintf(m.err, sizeof m.err, "unsupported at primary instruction %d (op %d)%s%s", i, op->op, g.why[0] ? ": " : "", g.why);
+			if (!ok) {
+				snprintf(m.err, sizeof m.err, "unsupported at primary instruction %d (op %d)%s%s", i, op->op, g.why[0] ? ": " : "", g.why);
+				if (op->op == OP_LDST && strstr(g.why, "isn't formed from an SA pointer"))
+					trace_ldst_origin(prog, code, n, i);
+			}
 			{	/* RECOMP_PROBE=t|p|o:<word>@<instr>: the register word as of this instruction, for emit_frag_epilogue */
 				const char *pr = probe_env(); const char *at = pr ? strchr(pr, '@') : 0;
 				int vmode = pr && pr[0] >= 'A' && pr[0] <= 'Z', bl = pr ? (pr[0] | 0x20) : 0;
