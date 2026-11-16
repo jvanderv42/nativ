@@ -372,10 +372,6 @@ static void page_display(void) {
 	{	static const char *const names[3] = {"Original##sf", "Soft##sf", "Softer##sf"}; int v = settings_int("shadow_filter", 1);
 		if (ui::segmented(names, 3, &v)) { settings_set_int("shadow_filter", v); settings_save(); }
 	}
-	if (game_option("uc_menu_blur")) {
-		ui::row("Menu blur correction", "Uncharted: smooths the menu and pause-screen blur by removing narrow sharp bands. Enabled by default; does not change gameplay depth of field.");
-		uc_menu_blur_toggle();
-	}
 	ui::rows_end();
 }
 static void page_performance(void) {
@@ -454,6 +450,10 @@ static void page_game(void) {
 			ui::row("Private server", "The community server that stands in for the game's own (host, or host:port). Empty: the game's own, long offline.");
 			ImGui::SetNextItemWidth(-FLT_MIN); ImGui::InputText("##srv", srv, sizeof srv); if (ImGui::IsItemDeactivatedAfterEdit()) { settings_set_str("private_server", srv); settings_save(); }
 		}
+	}
+	if (game_option("uc_menu_blur")) {
+		ui::row("Menu blur correction", "Uncharted: smooths the menu and pause-screen blur by removing narrow sharp bands. Enabled by default; does not change gameplay depth of field.");
+		uc_menu_blur_toggle();
 	}
 	if (game_option("uc_fire_loop_fix")) {
 		ui::row("Gunfire sound fix", "Uncharted: stops automatic gunfire that kept playing after the weapon stopped firing. Enabled by default; other sounds are not changed.");
@@ -683,6 +683,17 @@ int overlay_mouse_captured(void) { return g_ctx && g_has_window && g_mouse_captu
 static void menu_game(void) {
 	if (ImGui::MenuItem(g_paused ? "Resume" : "Pause")) overlay_set_paused(!g_paused);
 	ImGui::TextUnformatted("Volume"); ImGui::SameLine(); volume_slider();
+	if (game_option("uc_menu_blur")) {
+		const char *override_value = std::getenv("RECOMP_UC_MENU_BLUR");
+		const bool forced = override_value && *override_value;
+		bool enabled = forced ? std::atoi(override_value) != 0 : settings_int("uc_menu_blur", 1) != 0;
+		ImGui::BeginDisabled(forced);
+		if (ImGui::MenuItem("Menu blur correction", nullptr, &enabled)) {
+			settings_set_int("uc_menu_blur", enabled ? 1 : 0);
+			settings_save();
+		}
+		ImGui::EndDisabled();
+	}
 	if (game_option("uc_fire_loop_fix")) {
 		bool forced; bool enabled = uc_fire_loop_fix_state(&forced);
 		ImGui::BeginDisabled(forced);
@@ -729,17 +740,6 @@ static void menu_view(void) {
 			if (ImGui::MenuItem(name, nullptr, active == rate)) set_frame_rate(rate);
 		}
 		ImGui::EndMenu();
-	}
-	if (game_option("uc_menu_blur")) {
-		const char *override_value = std::getenv("RECOMP_UC_MENU_BLUR");
-		const bool forced = override_value && *override_value;
-		bool enabled = forced ? std::atoi(override_value) != 0 : settings_int("uc_menu_blur", 1) != 0;
-		ImGui::BeginDisabled(forced);
-		if (ImGui::MenuItem("Menu blur correction", nullptr, &enabled)) {
-			settings_set_int("uc_menu_blur", enabled ? 1 : 0);
-			settings_save();
-		}
-		ImGui::EndDisabled();
 	}
 	if (ImGui::BeginMenu("On-screen stats")) {
 		static const char *const names[3] = {"Off", "FPS", "Full"};
