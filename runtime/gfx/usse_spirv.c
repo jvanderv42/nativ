@@ -1206,6 +1206,42 @@ static int writes_word(const UOp *w, int bank, int word) {
 	for (int c = 0; c < 4; c++) if ((w->mask >> c) & 1 && w->dst.num + c / lpw == word) return 1;
 	return 0;
 }
+/* Return the SA addend of an I32MAD repeat that wrote a particular register.
+ * The Vita 1.03 compiler uses SMLSI + a two-repeat I32MAD to compute adjacent
+ * bone pointers (PA5/PA6 = index * stride + SA32/SA33). The original backwards
+ * scan only checked the un-repeated destination PA5, so an LDST from PA6 fell
+ * back to software despite being SA-derived. Evaluate the same register stepping
+ * as emit_i32mad/usse.c, without guessing the base of arbitrary integer writes. */
+static int ldst_repeated_i32mad_sa(const UOp *code, int j, int bank, int word) {
+	const UOp *w = &code[j];
+	if (w->op != OP_I32MAD || w->reps <= 1 || w->sub2 != 2 ||
+	    w->dst.bank != bank || w->s2.bank != BK_SA || w->pred_kind) return -1;
+	int inc[4][17];
+	for (int sl = 0; sl < 4; sl++) for (int r = 0; r <= 16; r++) inc[sl][r] = r;
+	for (int k = 0; k < j; k++) {
+		const UOp *v = &code[k];
+		if (v->op == OP_SMLSI) {
+			for (int sl = 0; sl < 4; sl++) {
+				int val = v->args[sl], step = (int8_t)(val & 0xff);
+				if (!((val >> 8) & 1)) for (int r = 0; r <= 16; r++) inc[sl][r] = r * step;
+				else for (int r = 0; r < 4; r++) inc[sl][r] = (step >> (2 * r)) & 3;
+			}
+		} else if (v->op == OP_SMBO) {
+			for (int sl = 0; sl < 4; sl++)
+				for (int r = 0; r <= 16; r++) inc[sl][r] = r + v->args[sl];
+		}
+	}
+	for (int r = 0; r < w->reps; r++) {
+		int od, os;
+		switch (w->repmode) {
+		case RM_EXTERNAL: case RM_BOTH: od = os = 4 * r; break;
+		case RM_INTERNAL: od = os = 0; break;
+		default: od = inc[3][r <= 16 ? r : 16]; os = inc[2][r <= 16 ? r : 16]; break;
+		}
+		if ((int)w->dst.num + od == word) return (int)w->s2.num + os;
+	}
+	return -1;
+}
 static int ldst_pointer_sa(const UOp *code, int i) {
 	const UOp *op = &code[i];
 	if (op->s0.bank == BK_SA) return op->s0.num;
@@ -1213,6 +1249,8 @@ static int ldst_pointer_sa(const UOp *code, int i) {
 	for (int j = i - 1; j >= 0; j--) {   /* the latest writer of the base register */
 		const UOp *w = &code[j];
 		if (w->op == OP_NOP || w->op == OP_SMLSI || w->op == OP_SMBO || w->op == OP_BR || w->op == OP_KILL) continue;
+		int repeated_sa = ldst_repeated_i32mad_sa(code, j, op->s0.bank, op->s0.num);
+		if (repeated_sa >= 0) return repeated_sa;
 		if (!writes_word(w, op->s0.bank, op->s0.num)) continue;
 		if (w->op == OP_I32MAD && w->sub2 == 2 && w->s2.bank == BK_SA) return w->s2.num;   /* a full-width addend from SA: the pointer */
 		if (w->op == OP_I32MAD2 && !w->sub2 && w->s2.bank == BK_SA && !(w->s2.negabs & 1)) return w->s2.num;   /* I32MAD2's addend is always whole (Killzone's quarter-res pass: (960y + x) * 32 + SA11) */
