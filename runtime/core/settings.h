@@ -33,6 +33,7 @@
  *   hud_layout    gfx_gpu.c   edges | 16:9 | stretch (default edges)   with a wider view: the 2D elements at their own shape, anchored
  *                             to the screen edge of their third or all to the centre (a 16:9 frame), or stretched to the width; read at each present
  *   uc_menu_blur gfx_gpu.c   0 | 1 (default 1)          Uncharted-specific menu/pause blur correction (RECOMP_UC_MENU_BLUR overrides)
+ *   uc_fire_loop_fix packs/PCSA00029/hooks.c   0 | 1 (default 1)   Uncharted-specific: a gunfire loop whose stop came in the frame it started is stopped again (RECOMP_UC_FIRE_LOOP_FIX overrides)
  *   full_res_world gfx_gpu.c  0 | 1 (default 1)          the buffers a game draws below the screen's resolution at the full one (RECOMP_TARGET_SCALE; read at each scene)
  *   ssao          ssao.c      0 | 1 (default 1)          ambient occlusion on the main 3D scene, for a game that names it (RECOMP_SSAO; RECOMP_SSAO_ON wins)
  *   ssao_strength ssao.c      0..2 (default 1.0)         how dark (read every frame)

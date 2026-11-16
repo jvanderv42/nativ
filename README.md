@@ -75,6 +75,18 @@ In **Uncharted: Golden Abyss**, a game-specific correction smooths the title and
 
 The correction was evaluated in the Windows/Nightjar workflow and is intentionally limited to the identified Uncharted menu/pause compositing shaders. See [technical notes](docs/uncharted-menu-focus-slab.md) for details.
 
+## Uncharted gunfire sound fix
+
+In **Uncharted: Golden Abyss**, automatic gunfire could keep playing for about 15 seconds after the weapon stopped firing (seen with the AK-47: fire from cover until the magazine is empty, keep fire held, return to cover). A game-specific correction stops it.
+
+- **Default:** On, including the first launch with no saved preference.
+- **In-game setting:** Press **F10 → Game → Gunfire sound fix**, or use the top-edge **Game** menu. A change applies at once.
+- **Saved preference:** Stored in Uncharted's own `settings.ini`. The setting does not appear in other games.
+- **Diagnostic override:** `RECOMP_UC_FIRE_LOOP_FIX=0` disables the correction and `RECOMP_UC_FIRE_LOOP_FIX=1` forces it on for the process. When an override is set, the in-game control is unavailable until the game is restarted without it.
+- **Trace:** `RECOMP_UC_SND_TRACE=1` logs each gunfire loop from start to end (`uc-snd:` and `uc-fl:` lines). Off by default.
+
+The correction only re-sends a stop the game itself already requested, and only for looping gun sounds. One shot of the cancelled burst may still be heard. Recompile Uncharted after updating: the correction is part of the game's own hooks. See [technical notes](docs/uncharted-ak47-early-stop.md).
+
 ## Controller and touchscreen setup
 
 For games with Vita touch requirements:

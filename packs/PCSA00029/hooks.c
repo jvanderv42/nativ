@@ -1197,3 +1197,152 @@ void recomp_ihook_uc_look_velocity(Cpu *c, int reg) {
 	uc_mx = uc_my = 0; uc_age = 0;
 	if (getenv("RECOMP_YAW_DIAG")) { static int n; if (n++ % 20 == 0) fprintf(stderr, "uc_look_velocity: cam %#x v %.4f %.4f\n", cam, vx, vy); }
 }
+
+/* RECOMP_UC_SND_TRACE=1 (a diagnostic, silent and inert unless set): the game's side of its sounds' starts and stops -- the
+ * AK-47's fire loop that plays on for ~127 shots (14.7 s) after the magazine empties with fire held and Drake drops back into
+ * cover (2026-11-15; the NGS traces show the engine only playing what it is told). Read from the game's code:
+ *   - fn_8102d048(manager, record) starts a record's sound: snd play fn_8159826e(bank, index, params, -1) -> the Scream
+ *     handle, kept at record+0x74 (0x8102d1fa: just after the call, r6 the handle, r5 the record, r8 the index).
+ *   - the game's stops fn_8102de4c(manager, record) and fn_8102ddd2(manager, record, now): for a looping sound (record+0x8c
+ *     bit 0) of category 0x1c/0x1d (record+0x48) they do NOT stop the Scream sound; they set "stop requested" (+0x8c bit 1).
+ *   - the manager's update (fn_8102e5d2) builds each live record's parameters (fn_8102c1c2): with the request set it sends
+ *     the sound's script register 3 = 0 (params flag 0x80000) and clears the request (0x8102c648). The script leaves its
+ *     loop on that register, so the shot in flight ends whole.
+ *   - fn_81598488(handle, now) is Scream's own stop.
+ * One line per event, with the record's fields and the game return addresses on the stack (innermost first: who asked). */
+#include <time.h>
+static int uc_snd_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("RECOMP_UC_SND_TRACE"); on = e && *e && *e != '0'; } return on; }
+static uint64_t uc_snd_ms(void) {   /* ms since the first sound event of the run: the t_ms of every uc-snd: and uc-fl: line */
+	static uint64_t t0; struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+	const uint64_t ms = (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000; if (!t0) t0 = ms ? ms : 1;
+	return ms - t0;
+}
+static void uc_snd_line(Cpu *c, const char *what, uint32_t rec, uint32_t handle, uint32_t extra) {
+	const uint64_t ms = uc_snd_ms(), t0 = 0;
+	char chain[160]; size_t at = 0; chain[0] = 0;
+	const uint32_t sp = c->r[13];
+	for (uint32_t k = 0, n = 0; k < 128 && n < 8 && at + 12 < sizeof chain; k++) {   /* the saved return addresses: odd (Thumb), inside the game's code */
+		const uint32_t v = RD32(sp + 4 * k);
+		if ((v & 1) && v >= 0x81000000u && v < 0x818fe484u) { at += (size_t)snprintf(chain + at, sizeof chain - at, "%s%#x", n++ ? " " : "", v); }
+	}
+	if (rec) fprintf(stderr, "    uc-snd: t_ms=%llu frame=%llu event=%s rec=%#x handle=%#x index=%d cat=%#x name=%#x state=%u attach=%u f5c=%#x f8c=%#x extra=%#x lr=%#x chain=%s\n",
+	                 (unsigned long long)(ms - t0), (unsigned long long)display_frames(), what, rec, handle, (int)(int16_t)RD32(rec + 0x10), RD32(rec + 0x48), RD32(rec + 0x54),
+	                 RD32(rec + 0x7c), RD32(rec + 0x78), RD8(rec + 0x5c), RD8(rec + 0x8c), extra, c->r[14], chain);
+	else fprintf(stderr, "    uc-snd: t_ms=%llu frame=%llu event=%s handle=%#x extra=%#x lr=%#x chain=%s\n", (unsigned long long)(ms - t0), (unsigned long long)display_frames(), what, handle, extra, c->r[14], chain);
+}
+
+/* The fire loop whose stop comes too early (docs/uncharted-ak47-early-stop.md). A looping gun sound (record+0x8c bit 0,
+ * category 0x1c/0x1d) is not stopped through Scream's stop: the game sets "stop requested" (record+0x8c bit 1) and its next
+ * manager update writes 0 to the sound's control value (Scream script register 3, the handler's byte +0x167), which the
+ * sound's script reads to leave its loop. When the game asks for that stop in the frame the sound started, the 0 is written
+ * before the script has run, and the loop plays on. This follows each such sound from start to end and logs it (uc-fl:
+ * lines, with RECOMP_UC_SND_TRACE=1). With the fix on (the game's uc_fire_loop_fix setting, default 1, read once per
+ * manager update; RECOMP_UC_FIRE_LOOP_FIX=0|1 overrides it for the process), when the game's stop came within
+ * UC_FL_EARLY_MS of the start, was sent, and the control value is above 0 while the sound is still alive, it sets the
+ * game's own "stop requested" bit once more, so the game re-sends its stop. Nothing else is written, and nothing is
+ * stopped that the game did not ask to stop.
+ * The script, read from the loaded banks (grain handlers at 0x81903644): set register 3 to 127; loop { the shot; wait;
+ * register 3 -= 1; leave if it is below 1 }. So a stop that was taken leaves the value at -1 while the last shot fades,
+ * and a stop that was lost leaves a positive count: above 0 is the test, not non-zero. */
+#define UC_FL_N 16
+#define UC_FL_EARLY_MS 100u   /* which stops count as "shortly after the start"; not when a retry happens */
+#define UC_FL_RETRIES 2
+typedef struct { uint32_t rec, handle, name, bank; uint64_t play_ms, play_frame, stop_ms; int used, stop_seen, early, sent, after, retries, lost_said, capped, rec_lost, last_reg, changed; uint32_t tones, tones_after_stop; } UcFl;
+static UcFl uc_fl[UC_FL_N];
+static pthread_mutex_t uc_fl_lock = PTHREAD_MUTEX_INITIALIZER;
+static int uc_fl_setting = -1;   /* uc_fire_loop_fix as of the last manager update (the overlay's toggle applies at once) */
+static int uc_fl_forced(void) {   /* RECOMP_UC_FIRE_LOOP_FIX: 0 not set, 1 forced off, 2 forced on */
+	static int f = -1;
+	if (f < 0) { const char *e = getenv("RECOMP_UC_FIRE_LOOP_FIX"); f = e && *e ? (atoi(e) != 0 ? 2 : 1) : 0; }
+	return f;
+}
+static void uc_fl_refresh(void) { if (!uc_fl_forced()) uc_fl_setting = settings_int("uc_fire_loop_fix", 1) != 0; }
+static int uc_fl_fix(void) {
+	if (uc_fl_forced()) return uc_fl_forced() == 2;
+	if (uc_fl_setting < 0) uc_fl_refresh();
+	return uc_fl_setting;
+}
+static int uc_fl_on(void) { return uc_fl_fix() || uc_snd_on(); }
+static uint32_t uc_fl_handler(uint32_t h) {   /* Scream's handle -> block-sound handler (fn_815a45c2); 0: that sound is over */
+	if (!(h >> 31) || ((h >> 24) & 0x1f) != 5) return 0;
+	const uint32_t a = 0x81982400u + ((h >> 16) & 0xff) * 0x228u;
+	return RD32(a) == h ? a : 0;
+}
+static int uc_fl_eligible(uint32_t rec) { const uint32_t cat = RD32(rec + 0x48); return (RD8(rec + 0x8c) & 1) && (cat == 0x1c || cat == 0x1d); }
+static void uc_fl_log(const UcFl *f, const char *what, const char *note) {
+	if (!uc_snd_on()) return;   /* the lines are the trace's; the fix itself is silent */
+	const uint64_t ms = uc_snd_ms(); const uint32_t h = uc_fl_handler(f->handle);
+	char regs[48], since[32] = "-";
+	if (h) snprintf(regs, sizeof regs, "%d,%d,%d,%d hflags=%#x", (int8_t)RD8(h + 0x164), (int8_t)RD8(h + 0x165), (int8_t)RD8(h + 0x166), (int8_t)RD8(h + 0x167), RD32(h + 4));
+	else snprintf(regs, sizeof regs, "gone");
+	if (f->stop_seen) snprintf(since, sizeof since, "%llu", (unsigned long long)(ms - f->stop_ms));
+	fprintf(stderr, "    uc-fl: t_ms=%llu frame=%llu event=%s rec=%#x handle=%#x name=%#x bank=%#x since_start_ms=%llu since_stop_ms=%s regs=%s rec_handle=%#x f8c=%#x state=%u early=%d sent=%d retries=%d tones=%u tones_after_stop=%u%s%s\n",
+	        (unsigned long long)ms, (unsigned long long)display_frames(), what, f->rec, f->handle, f->name, f->bank, (unsigned long long)(ms - f->play_ms), since, regs,
+	        RD32(f->rec + 0x74), RD8(f->rec + 0x8c), RD32(f->rec + 0x7c), f->early, f->sent, f->retries, f->tones, f->tones_after_stop, note ? " note=" : "", note ? note : "");
+}
+static UcFl *uc_fl_find(uint32_t rec) {   /* the followed sound this record still holds */
+	for (int i = 0; i < UC_FL_N; i++) if (uc_fl[i].used && !uc_fl[i].rec_lost && uc_fl[i].rec == rec && RD32(rec + 0x74) == uc_fl[i].handle) return &uc_fl[i];
+	return NULL;
+}
+static void uc_fl_play(uint32_t rec, uint32_t handle) {
+	if (!handle || !uc_fl_eligible(rec)) return;
+	pthread_mutex_lock(&uc_fl_lock);
+	UcFl *f = NULL;
+	for (int i = 0; i < UC_FL_N; i++) { if (uc_fl[i].used && uc_fl[i].rec == rec) uc_fl[i].rec_lost = 1; if (!uc_fl[i].used && !f) f = &uc_fl[i]; }   /* the record has a new sound: the old one is only watched from here */
+	if (!f) { f = &uc_fl[0]; for (int i = 1; i < UC_FL_N; i++) if (uc_fl[i].play_ms < f->play_ms) f = &uc_fl[i]; uc_fl_log(f, "dropped", "table-full"); }
+	memset(f, 0, sizeof *f);
+	f->used = 1; f->rec = rec; f->handle = handle; f->name = RD32(rec + 0x54); f->bank = RD32(rec + 0x58); f->play_ms = uc_snd_ms(); f->play_frame = display_frames();
+	{ const uint32_t h = uc_fl_handler(handle); f->last_reg = h ? (int8_t)RD8(h + 0x167) : 0; }
+	uc_fl_log(f, "start", NULL);
+	pthread_mutex_unlock(&uc_fl_lock);
+}
+static void uc_fl_stop(uint32_t rec, const char *which) {   /* the game's stop, on entry: the request bit is not set yet */
+	pthread_mutex_lock(&uc_fl_lock);
+	UcFl *f = uc_fl_find(rec);
+	if (f) {
+		if (!f->stop_seen) { f->stop_seen = 1; f->stop_ms = uc_snd_ms(); f->early = f->stop_ms - f->play_ms <= UC_FL_EARLY_MS; uc_fl_log(f, "stop-requested", f->play_frame == display_frames() ? (which[0] == '2' ? "stop2,same-frame-as-start" : "same-frame-as-start") : which[0] == '2' ? "stop2" : NULL); }
+		else uc_fl_log(f, "stop-requested-again", NULL);
+	}
+	pthread_mutex_unlock(&uc_fl_lock);
+}
+static void uc_fl_sent(uint32_t rec) {   /* 0x8102c648: the parameters now carry control value 0; Scream gets them later in this update */
+	pthread_mutex_lock(&uc_fl_lock);
+	UcFl *f = uc_fl_find(rec);
+	if (f) { f->sent++; f->after = 1; uc_fl_log(f, "stop-sent", f->sent == 1 ? "original,value-shown-is-before-the-write" : "re-sent,value-shown-is-before-the-write"); }
+	pthread_mutex_unlock(&uc_fl_lock);
+}
+static void uc_fl_tick(void) {   /* once per manager update, before it builds any record's parameters */
+	pthread_mutex_lock(&uc_fl_lock);
+	for (int i = 0; i < UC_FL_N; i++) {
+		UcFl *f = &uc_fl[i];
+		if (!f->used) continue;
+		const uint32_t h = uc_fl_handler(f->handle);
+		if (!h) { uc_fl_log(f, "ended", !f->stop_seen ? "no-stop-was-requested" : f->retries ? "after-a-re-requested-stop" : "after-the-original-stop"); f->used = 0; continue; }
+		if (!f->rec_lost && RD32(f->rec + 0x74) != f->handle) { f->rec_lost = 1; uc_fl_log(f, "record-released", "sound-still-alive,watched-only"); }
+		const int reg = (int8_t)RD8(h + 0x167);
+		if (f->after) { f->after = 0; uc_fl_log(f, "after-stop-sent", reg > 0 ? "control-value-above-zero" : reg ? "control-value-below-zero,stop-taken" : "control-value-zero"); }
+		else if (reg != f->last_reg) {   /* before the stop only the first change (the script's own start); after it every one: one per shot */
+			if (f->stop_seen) uc_fl_log(f, "control-value-changed", reg > 0 ? "after-stop,still-counting" : "after-stop");
+			else if (!f->changed++) uc_fl_log(f, "control-value-changed", "first-since-start");
+		}
+		f->last_reg = reg;
+		if (!f->sent || reg <= 0) continue;
+		if (!f->lost_said) { f->lost_said = 1; uc_fl_log(f, "stop-lost", "stop-was-sent,control-value-above-zero,sound-alive"); }
+		if (!uc_fl_fix() || !f->early || f->rec_lost || !uc_fl_eligible(f->rec) || (RD8(f->rec + 0x8c) & 2)) continue;
+		if (f->retries >= UC_FL_RETRIES) { if (!f->capped) { f->capped = 1; uc_fl_log(f, "retry-limit", "no-more-retries"); } continue; }
+		WR8(f->rec + 0x8c, RD8(f->rec + 0x8c) | 2);   /* the game's own "stop requested": this update sends control value 0 again */
+		f->retries++; uc_fl_log(f, "retry", "stop-re-requested");
+	}
+	pthread_mutex_unlock(&uc_fl_lock);
+}
+void recomp_ihook_uc_snd_played(Cpu *c, int reg) { (void)reg; if (!c->r[5]) return; if (uc_snd_on()) uc_snd_line(c, "play", c->r[5], c->r[6], c->r[8]); if (uc_fl_on()) uc_fl_play(c->r[5], c->r[6]); }                 /* 0x8102d1fa */
+void recomp_hook_uc_snd_stop(Cpu *c) { if (!c->r[1]) return; if (uc_snd_on()) uc_snd_line(c, "game-stop", c->r[1], RD32(c->r[1] + 0x74), 0); if (uc_fl_on()) uc_fl_stop(c->r[1], "1"); }                             /* fn_8102de4c */
+void recomp_hook_uc_snd_stop_now(Cpu *c) { if (!c->r[1]) return; if (uc_snd_on()) uc_snd_line(c, "game-stop2", c->r[1], RD32(c->r[1] + 0x74), c->r[2] & 0xff); if (uc_fl_on()) uc_fl_stop(c->r[1], "2"); }           /* fn_8102ddd2 */
+void recomp_ihook_uc_snd_stop_sent(Cpu *c, int reg) { (void)reg; if (!c->r[6]) return; if (uc_snd_on()) uc_snd_line(c, "stop-register-sent", c->r[6], RD32(c->r[6] + 0x74), 0); if (uc_fl_on()) uc_fl_sent(c->r[6]); }   /* 0x8102c648 */
+void recomp_hook_uc_snd_engine_stop(Cpu *c) { if (uc_snd_on()) uc_snd_line(c, "engine-stop", 0, c->r[0], c->r[1]); }                                           /* fn_81598488 */
+void recomp_ihook_uc_snd_update(Cpu *c, int reg) { (void)c; (void)reg; uc_fl_refresh(); if (uc_fl_on()) uc_fl_tick(); }                                                          /* 0x8102e5e4, in the manager's update fn_8102e5d2 */
+void recomp_hook_uc_snd_tone(Cpu *c) {   /* fn_8159e546, Scream's tone grain (r0: the handler), on the sound thread: a followed sound starting a voice */
+	if (!uc_fl_on() || !c->r[0]) return;
+	const uint32_t h = RD32(c->r[0]);
+	for (int i = 0; i < UC_FL_N; i++) if (uc_fl[i].used && uc_fl[i].handle == h) { __atomic_fetch_add(&uc_fl[i].tones, 1, __ATOMIC_RELAXED); if (uc_fl[i].stop_seen) __atomic_fetch_add(&uc_fl[i].tones_after_stop, 1, __ATOMIC_RELAXED); break; }
+}

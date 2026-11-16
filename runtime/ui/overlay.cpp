@@ -285,6 +285,22 @@ static void uc_menu_blur_toggle(void) {
 	ImGui::EndDisabled();
 	if (forced) ImGui::TextDisabled("Overridden by RECOMP_UC_MENU_BLUR");
 }
+/* Uncharted-only sound correction (packs/PCSA00029/hooks.c), saved with the game's own settings; the same override rule. */
+static bool uc_fire_loop_fix_state(bool *forced) {
+	const char *override_value = std::getenv("RECOMP_UC_FIRE_LOOP_FIX");
+	*forced = override_value && *override_value;
+	return *forced ? std::atoi(override_value) != 0 : settings_int("uc_fire_loop_fix", 1) != 0;
+}
+static void uc_fire_loop_fix_toggle(void) {
+	bool forced; bool enabled = uc_fire_loop_fix_state(&forced);
+	ImGui::BeginDisabled(forced);
+	if (ui::toggle("ucFireLoopFix", &enabled)) {
+		settings_set_int("uc_fire_loop_fix", enabled ? 1 : 0);
+		settings_save();
+	}
+	ImGui::EndDisabled();
+	if (forced) ImGui::TextDisabled("Overridden by RECOMP_UC_FIRE_LOOP_FIX");
+}
 static void page_display(void) {
 	if (!ui::rows_begin("display")) return;
 	ui::row("Resolution", "The game drawn at a multiple of the Vita's 960 × 544. Higher is sharper; 4× and up want a fast GPU.");
@@ -438,6 +454,10 @@ static void page_game(void) {
 			ui::row("Private server", "The community server that stands in for the game's own (host, or host:port). Empty: the game's own, long offline.");
 			ImGui::SetNextItemWidth(-FLT_MIN); ImGui::InputText("##srv", srv, sizeof srv); if (ImGui::IsItemDeactivatedAfterEdit()) { settings_set_str("private_server", srv); settings_save(); }
 		}
+	}
+	if (game_option("uc_fire_loop_fix")) {
+		ui::row("Gunfire sound fix", "Uncharted: stops automatic gunfire that kept playing after the weapon stopped firing. Enabled by default; other sounds are not changed.");
+		uc_fire_loop_fix_toggle();
 	}
 	ui::row("Volume");
 	{ float pct = P.vol * 100.0f; ImGui::SetNextItemWidth(-FLT_MIN); if (ImGui::SliderFloat("##vol", &pct, 0.0f, 100.0f, "%.0f%%")) set_volume(pct / 100.0f); }
@@ -663,6 +683,15 @@ int overlay_mouse_captured(void) { return g_ctx && g_has_window && g_mouse_captu
 static void menu_game(void) {
 	if (ImGui::MenuItem(g_paused ? "Resume" : "Pause")) overlay_set_paused(!g_paused);
 	ImGui::TextUnformatted("Volume"); ImGui::SameLine(); volume_slider();
+	if (game_option("uc_fire_loop_fix")) {
+		bool forced; bool enabled = uc_fire_loop_fix_state(&forced);
+		ImGui::BeginDisabled(forced);
+		if (ImGui::MenuItem("Gunfire sound fix", nullptr, &enabled)) {
+			settings_set_int("uc_fire_loop_fix", enabled ? 1 : 0);
+			settings_save();
+		}
+		ImGui::EndDisabled();
+	}
 	if (ImGui::MenuItem("Capture frame", "F12")) g_want_capture = true;
 	if (ImGui::MenuItem("Full menu…", "F10")) overlay_open();
 	ImGui::Separator();
