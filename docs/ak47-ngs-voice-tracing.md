@@ -62,3 +62,19 @@ $env:RECOMP_NGS_SFX_QUERY_TRACE = '1'
 Record a short video, the `session.log`, and the time the stuck sound begins and stops. The next investigation compares callback attribution and voice state polls during the sound burst, not aggregate voice-count totals alone.
 
 Do not interpret a passing build as verification of playback or logging on a target Windows PC.
+
+## Scream PCM game-wrapper context diagnostic (November 15, 2026)
+
+After reproducing the AK47 anomaly with both previous trace toggles, enable an additional opt-in register capture:
+
+```powershell
+$env:RECOMP_NGS_SFX_TRACE = '1'
+$env:RECOMP_NGS_SFX_QUERY_TRACE = '1'
+$env:RECOMP_NGS_SFX_CONTEXT_TRACE = '1'
+```
+
+Recompile Uncharted **from this diagnostic distribution** and then start the game through Project Nativ. The new `sfx-context:` line records the guest register context (r1-r12, sp, immediate LR) for `sceNgsVoicePlay`, `sceNgsVoiceKill` and `sceNgsVoiceKeyOff` only for Scream PCM voices (`def=5`). Match it to an `sfx:` line using the timestamp, voice and sequence.
+
+This is read-only instrumentation of the Scream wrapper's **NGS call boundary**. It does not recover the game's higher-level sound-event caller or its stop command; that requires identifying and verifying the game's sound-event function addresses in the decrypted executable. Registers may be reused and must not be interpreted as object IDs without corroboration. The capture deliberately does **not** dereference guest stack or pointer values.
+
+Compare the repeated AK47 gunfire's context with normal AK47 shots, particularly stable callee-saved register values (r4-r11), then identify candidate sound-event objects/functions for a subsequent, more targeted hook. There is no modification to audio mixing, callbacks, scheduling, input or FPS. Keep the accepted main release unchanged.

@@ -536,6 +536,35 @@ static void vo_state_log(Voice *v, uint32_t lr, uint64_t us) {
 }
 
 /* ---- voices */
+
+/* Additional read-only caller-context tracing for Scream PCM voices. These
+ * are the *guest registers at the NGS API boundary*, not a recovered game
+ * sound-event ID or proof of a particular caller. No guest memory is read.
+ * Compare the register patterns across the AK47's normal and stuck shots.
+ * Enabled only by RECOMP_NGS_SFX_CONTEXT_TRACE=1 (plus SFX_TRACE=1). */
+static int sfx_context_on(void) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *value = getenv("RECOMP_NGS_SFX_CONTEXT_TRACE");
+        enabled = value && !strcmp(value, "1");
+    }
+    return enabled;
+}
+static void sfx_trace_context(Cpu *c, Voice *v, const char *event) {
+    if (!sfx_trace_on() || !sfx_context_on() || !v || v->def != DEF_SCREAM) return;
+    extern uint64_t display_frames(void);
+    uint64_t now = vo_us();
+    uint64_t origin = sfx_trace_origin ? sfx_trace_origin : now;
+    int i = VIDX(v);
+    fprintf(stderr, "    sfx-context: t_ms=%llu frame=%llu upd=%llu voice=%d seq=%u event=%s lr=%#x r1=%#x r2=%#x r3=%#x r4=%#x r5=%#x r6=%#x r7=%#x r8=%#x r9=%#x r10=%#x r11=%#x r12=%#x sp=%#x cb_depth=%u\n",
+        (unsigned long long)((now - origin) / 1000),
+        (unsigned long long)display_frames(), (unsigned long long)updates,
+        i, sfx_trace_sequence[i], event, c->r[14],
+        c->r[1], c->r[2], c->r[3], c->r[4], c->r[5], c->r[6], c->r[7],
+        c->r[8], c->r[9], c->r[10], c->r[11], c->r[12], c->r[13],
+        sfx_cb_depth);
+}
+
 static void h_voice_play(Cpu *c) {
 	Voice *v = voice_of(A0);
 	if (v) { v->playing = 1; v->paused = 0; v->buffer = 0; v->byte_pos = 0; v->samples_gen = v->bytes_consumed = 0; v->loops_done = 0; v->upd_active = 0;
@@ -552,6 +581,7 @@ static void h_voice_play(Cpu *c) {
 		dump_log_line(v, "play", 0);
 	}
 	sfx_trace_play(v, c->r[14]);
+	sfx_trace_context(c, v, "play");
 	if (v && getenv("RECOMP_NGS_DEBUG")) {
 		uint32_t pp = v->params[0];
 		fprintf(stderr, "    ngs: play voice %#x def %u params:", A0, v->def);
@@ -570,6 +600,7 @@ static void h_voice_play(Cpu *c) {
 static void h_voice_kill(Cpu *c) {   /* stopped dead: no callback */
 	Voice *v = voice_of(A0);
 	sfx_trace_note(v, "kill-request", c->r[14]);
+	sfx_trace_context(c, v, "kill-request");
 	if (v && v->def == DEF_SCREAM_AT9 && vo_log_on()) fprintf(stderr, "    vo: v%d kill us %llu upd %llu lr %#x\n", VIDX(v), (unsigned long long)vo_us(), (unsigned long long)updates, c->r[14]);
 	if (v) { v->playing = 0; v->finishing = 0; v->releasing = v->released_out = 0; }
 	RET(0);
@@ -582,6 +613,7 @@ static void h_voice_keyoff(Cpu *c) {
 	pthread_mutex_lock(&lock);
 	Voice *v = voice_of(A0);
 	sfx_trace_note(v, "keyoff-request", c->r[14]);
+	sfx_trace_context(c, v, "keyoff-request");
 	if (v && v->def == DEF_SCREAM_AT9 && vo_log_on()) fprintf(stderr, "    vo: v%d keyoff us %llu upd %llu lr %#x\n", VIDX(v), (unsigned long long)vo_us(), (unsigned long long)updates, c->r[14]);
 	if (v && v->playing && !v->paused && PLAYER_VOICE(v->def) && !stages_off() && stage_module(v, ENV_ID) >= 0) {
 		if (!v->releasing) { v->releasing = 1; v->rel_ms = 0; v->rel_from = v->env_level; }
