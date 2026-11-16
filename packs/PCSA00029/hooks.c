@@ -427,6 +427,81 @@ void recomp_ihook_uc_path_end(Cpu *c, int reg) {
 void recomp_ihook_uc_rub_wait_floor(Cpu *c, int reg) {
 	if (reg >= 0 && reg <= 14 && (int32_t)c->r[reg] < 0) c->r[reg] = 0;
 }
+/* Complete the open puzzle: F3, Back + R1 or the F10 menu's button (hook_game_action, runtime/core/hooks.c) -- the charcoal
+ * rubbings, tile, cryptex, combination-lock, memory and parchment puzzles are made for the touch screen and fiddly with a
+ * mouse or a pad (2026-11-01). The game's own developers' cheat, the Lua function ForceCompleteActivePuzzle (fn_81082c7a
+ * in 1.00): the current puzzle ([uc_cur_puzzle]) -> its vtable +0x1b4, cPuzzle::ForceComplete (fn_81082604: the puzzle's
+ * progress saved as 100%, then its own Finish, vtable +0x1b0) -- as scripts would have called it, so the story goes on as
+ * after a solve. Called from the base cPuzzle update every kind of puzzle runs each frame (uc_pz_update: fn_81081ba2,
+ * 1.03 fn_8107d4a4; this in r0) once the puzzle has begun (+0x108), not from the window's thread; a request no puzzle
+ * takes within 2 s lapses, so it can't finish one met later. */
+static volatile int uc_pz_skip; static volatile uint64_t uc_pz_skip_at;
+static void uc_pz_skip_request(void) {
+	extern void overlay_toast_titled(const char *title, const char *body, double seconds);
+	uint32_t cur = game_addr("uc_cur_puzzle"), p = cur ? RD32(cur) : 0;
+	if (!p) { overlay_toast_titled("No puzzle open", "F3 / Back + R1 completes a puzzle while it is on screen.", 2.5); return; }
+	uc_pz_skip_at = display_frames(); uc_pz_skip = 1;
+}
+void recomp_hook_uc_pz_update(Cpu *c) {
+	if (!uc_pz_skip) return;
+	if (display_frames() > uc_pz_skip_at + 120) { uc_pz_skip = 0; return; }
+	uint32_t p = c->r[0], cur = game_addr("uc_cur_puzzle");
+	if (!cur || p != RD32(cur) || !RD8(p + 0x108)) return;
+	uc_pz_skip = 0;
+	extern uint32_t guest_call(Cpu *parent, uint32_t fn, uint32_t a0, uint32_t a1);
+	extern void overlay_toast_titled(const char *title, const char *body, double seconds);
+	fprintf(stderr, "uc puzzle: frame %llu completing %#x (ForceComplete %#x)\n", (unsigned long long)display_frames(), p, RD32(RD32(p) + 0x1b4));
+	guest_call(c, RD32(RD32(p) + 0x1b4), p, 0);
+	overlay_toast_titled("Puzzle completed", 0, 2.0);
+}
+/* Unlock every chapter: the F10 menu's second button (game_action_add, runtime/core/hooks.c) -- the debug menu that could do it
+ * hangs the game (2026-11-01). The game's own developers' cheat, the Lua function Unlock (fn_81111efc in 1.00 -> fn_811103be),
+ * on the chapter manager ([[uc_game] + 0x1560]: +0x24..+0x28 its chapters, each one's +0x24 the difficulty it was beaten on,
+ * 6 never; +0x44 the difficulty being played): every chapter marked beaten on that difficulty, then the progress saved. Here
+ * only the chapters not beaten yet, so one beaten on a harder difficulty keeps it -- and the last of them through the game's
+ * own BeatChapter (uc_beat_chapter: fn_81110672, 1.03 fn_81107b60; marks it, saves). Done on the game's thread as the chapter
+ * select asks how many chapters there are (the Lua function GetChapterCount: uc_chapter_count, fn_8111155a, 1.03
+ * fn_81108948), so it lists them all as it opens. */
+static volatile int uc_unlock_req;
+static void uc_unlock_request(void) {
+	extern void overlay_toast_titled(const char *title, const char *body, double seconds);
+	uc_unlock_req = 1;
+	overlay_toast_titled("Unlocking every chapter", "They open up as the main menu's Chapter Select is shown next (reopen it if it is on screen).", 4.0);
+}
+void recomp_hook_uc_chapter_count(Cpu *c) {
+	if (!uc_unlock_req) return;
+	uc_unlock_req = 0;
+	extern uint32_t guest_call(Cpu *parent, uint32_t fn, uint32_t a0, uint32_t a1);
+	extern void overlay_toast_titled(const char *title, const char *body, double seconds);
+	uint32_t g = game_addr("uc_game"), beat = game_addr("uc_beat_chapter");
+	uint32_t m = g && RD32(g) ? RD32(RD32(g) + 0x1560) : 0;
+	if (!m || !beat) return;
+	uint32_t v = RD32(m + 0x24), n = v ? (RD32(m + 0x28) - v) / 4 : 0, d = RD32(m + 0x44), last = ~0u, k = 0;
+	for (uint32_t i = 0; i < n && i < 128; i++) {
+		uint32_t ch = RD32(v + 4 * i);
+		if (!ch || RD32(ch + 0x24) != 6) continue;
+		if (last != ~0u) WR32(RD32(v + 4 * last) + 0x24, d);
+		last = i; k++;
+	}
+	fprintf(stderr, "uc chapters: frame %llu %u of %u not beaten, marked beaten on difficulty %u (save slot %u)\n", (unsigned long long)display_frames(), k, n, d, RD8(m + 0x34));
+	if (last == ~0u) { overlay_toast_titled("Every chapter is open already", 0, 2.5); return; }
+	guest_call(c, beat, m, last);
+	overlay_toast_titled("Every chapter unlocked", 0, 2.5);
+}
+__attribute__((constructor)) static void uc_actions_register(void) {
+	game_action_add("Complete the open puzzle", "F3, or Back + R1 on a controller, at any time. Here it closes this menu and happens as the game goes on.", uc_pz_skip_request);
+	game_action_add("Unlock every chapter", "Every chapter not finished yet is marked finished on the difficulty being played, so Chapter Select offers them all, and saved. Chapters finished on a harder difficulty keep it.", uc_unlock_request);
+}
+/* Uncharted 1.03's debug menu (the community's rePatch "debug menu patch", 2022: one byte of the 1.03 main program,
+ * movs r0, #1 -> #0 at 0x8110a2c8, the end of fn_8110a280): the same change without touching the program, when
+ * "debug_menu" is set (settings.ini debug_menu = 1, or RECOMP_UC_DEBUG_MENU=1). With it on the game hung after a cutscene
+ * and after a death (2026-10-31): the main thread waiting in sceGxmFinish (from the movie player's and the reload's
+ * teardown) for a completion that never came; off, the same places played through. Off by default for that. */
+void recomp_ihook_uc_debug_menu(Cpu *c, int reg) {
+	static int on = -1;
+	if (on < 0) { const char *e = getenv("RECOMP_UC_DEBUG_MENU"); on = e && *e ? atoi(e) != 0 : settings_int("debug_menu", 0) != 0; }
+	if (on && reg >= 0 && reg <= 14 && c->r[reg] == 1) c->r[reg] = 0;
+}
 /* Uncharted (PCSA00029) at 60 fps: of its 43 sites building 1/30 s, three ran once per presented frame at
  * both rates in live play (RECOMP_WATCH_COUNT over 600 frames of walking, our test save, 2026-10-10) and get
  * the frame's real time by the same hook -- fn_8128924a (0x81289498, ~90 calls a frame: an object's velocity
@@ -484,7 +559,11 @@ void recomp_hook_uc_proj(Cpu *c) {
 	 * -- fn_810b4354 (a point's screen position, clamped to 960x544: prompts and markers) and the builds at
 	 * 0x8115b36c, 0x813f4548 and 0x813f52de -- whose aspect uc_aspect already widens, so what they place
 	 * on screen stays on what it marks. The camera manager's one-time setup (0x810427c6) is left alone. */
-	static const uint32_t fov_callers[] = {0x810412e3u, 0x810b4457u, 0x8115b371u, 0x813f454du, 0x813f52e3u};
+	static uint32_t fov_callers[5];  /* version-specific call sites from pack.toml GAME_ADDRS */
+	if (!fov_callers[0]) {
+		static const char *const names[5] = {"uc_fov_call0", "uc_fov_call1", "uc_fov_call2", "uc_fov_call3", "uc_fov_call4"};
+		for (int i = 0; i < 5; i++) fov_callers[i] = game_addr(names[i]) | 1u;
+	}
 	for (unsigned i = 0; i < sizeof fov_callers / sizeof *fov_callers; i++) if ((lr | 1u) == fov_callers[i]) {
 		double f = fov_scale(2.0 * c->vfp.f[0]);
 		if (i == 0) uc_fov_ratio = f > 0 ? (float)(tan(f * 0.5) / tan(c->vfp.f[0])) : 1.0f;
@@ -853,9 +932,9 @@ static void uc_pop_check(uint32_t sw, const uint16_t *list, uint32_t n, const ch
 	if (drops > 6) fprintf(stderr, "uc pop: frame %llu table %#x (%s) ... %d dropped in all (list %u)\n", (unsigned long long)f, sw, who, drops, n);
 	memcpy(st[k].set, now, sizeof now); st[k].frame = f;
 }
-static void uc_pvs_strip(Cpu *c, uint32_t sw, uint32_t shot) {
+static void uc_pvs_strip(Cpu *c, uint32_t sw, uint32_t shot, uint32_t rec) {
 	enum { MAXREC = 65536, MAXLIST = 4080 };
-	uint32_t rec = c->r[4], list = sw + 0x64, fake = sw + 0x2054;
+	uint32_t list = sw + 0x64, fake = sw + 0x2054;
 	uint32_t nkeys; const uint64_t *keys = uc_shot_keys(shot, &nkeys);
 	/* the level's records: sphere, and whether the cutscene set has that piece (once per pair) */
 	typedef struct { float x, y, z, r; uint8_t dup; } LRec;
@@ -906,16 +985,17 @@ static void uc_pvs_strip(Cpu *c, uint32_t sw, uint32_t shot) {
 	}
 }
 void recomp_ihook_uc_pvs_union(Cpu *c, int reg) {
-	(void)reg;
 	extern uint64_t display_frames(void);
 	enum { UC_VIEW_ITEMS = 3500, UC_MAX_POINTS = 512, UC_MAX_LIST = 4080, UC_MAX_EXT = 16384 };
 	const float UC_NEAR_MIN = 15.0f;   /* nothing fades this close (the shortest fade ends at 16 m): an extra
 	                                    * nearer than this was left out for being hidden, not far -- skip it */
 	uint32_t cap = uc_item_cap, pool_safe = cap - cap / 10;   /* the pools' size (4x since the setup hook) and a frame's safe use of it */
 	static int registered; if (!registered) { registered = 1; usse_set_uniform_filter(uc_fade_filter); }
-	if (uc_strip_tab && c->r[9] == uc_strip_tab) { uc_pvs_strip(c, uc_strip_tab, uc_strip_shot); return; }   /* uc_zone_done's run of a hidden level table */
+	/* The record is the instruction's destination register: r4 in 1.00, r5 in 1.03. */
+	uint32_t rec = reg >= 0 && reg <= 12 ? c->r[reg] : c->r[4];
+	if (uc_strip_tab && c->r[9] == uc_strip_tab) { uc_pvs_strip(c, uc_strip_tab, uc_strip_shot, rec); return; }   /* uc_zone_done's run of a hidden level table */
 	uc_table_drawn(c->r[9]);   /* (the game's own update of it: uc_zone_done leaves a table the game draws alone) */
-	uint32_t sw = c->r[9], rec = c->r[4], list = sw + 0x64, fake = sw + 0x2054;
+	uint32_t sw = c->r[9], list = sw + 0x64, fake = sw + 0x2054;
 	static uint32_t last_sw, last_rec, live_n, n_own, n_ext; static uint16_t live_list[4096]; static double last_k; static int live, budget_cut, last_band;
 	static UcPvsEnt own[4096], ext[UC_MAX_EXT]; static float rad; static int pts;
 	uint32_t items_last = uc_items_peak; uc_items_peak = 0;
@@ -1053,7 +1133,10 @@ void recomp_hook_uc_pvs_free(Cpu *c) {
 	pthread_mutex_unlock(&uc_tables_mx);
 }
 static uint32_t uc_handle_obj(uint32_t h) { return h ? RD32(h + 0x28) : 0; }   /* FUN_8165d494's handle -> object (+0x28) */
-static int uc_is_table(uint32_t t) { return t && RD32(t) == 0x818cdc18u; }   /* BSGfx::cPVSTable's vtable */
+static int uc_is_table(uint32_t t) {
+	static uint32_t vtable; if (!vtable) vtable = game_addr("uc_pvs_vtable");
+	return t && vtable && RD32(t) == vtable;
+}   /* BSGfx::cPVSTable's version-specific vtable */
 /* the share of a cutscene set's pieces a table also has (the same sphere), once per pair: the level the set was cut
  * from has nearly all of them (479 of 496, frame_2103) */
 static uint32_t uc_overlap(uint32_t tab, uint32_t shot) {
@@ -1098,7 +1181,8 @@ void recomp_ihook_uc_zone_done(Cpu *c, int reg) {
 	}
 	float want = 960.0f / 544.0f * (float)aspect_widen(), got = t[0] > t[1] ? t[0] / t[1] : t[1] / t[0];
 	if (fabsf(got / want - 1.0f) > 0.03f) return;
-	GuestFn fn = guest_lookup(0x81255972u);
+	uint32_t update = game_addr("uc_static_world");
+	GuestFn fn = update ? guest_lookup(update) : NULL;
 	if (!fn) return;
 	uint32_t tabs[32]; pthread_mutex_lock(&uc_tables_mx); memcpy(tabs, uc_tables, sizeof tabs); pthread_mutex_unlock(&uc_tables_mx);
 	uint32_t nk; uc_shot_keys(shot, &nk);

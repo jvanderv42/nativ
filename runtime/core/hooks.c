@@ -89,6 +89,18 @@ void (*hook_seq_arm)(const char *);
 void (*recomp_on_bad_call)(Cpu *, uint32_t);
 void (*hook_stall_long)(uint64_t stall_us);
 
+/* Per-game actions run from the window thread; game-specific guest work is deferred
+ * to a hook on the game's own thread (see Uncharted's puzzle completion). */
+GameAction hook_game_actions[GAME_ACTIONS_MAX];
+int hook_game_actions_n;
+void game_action_add(const char *name, const char *about, void (*fn)(void)) {
+	if (hook_game_actions_n < GAME_ACTIONS_MAX) hook_game_actions[hook_game_actions_n++] = (GameAction){name, about, fn};
+}
+void game_action_run(int index) {
+	if (index >= 0 && index < hook_game_actions_n) hook_game_actions[index].fn();
+}
+void game_action_request(void) { game_action_run(0); }
+
 /* ---- Sony's shader patcher (libgxm, a recompiled module: MOD_HOOKS). RECOMP_GXM_PATCHER_LOG=1: each fragment / vertex
  * program variant the game creates, with the frame -- whether a game creates them at load time (the shader prebuild's
  * premise) or at first draw. sceGxmShaderPatcherCreateFragmentProgram(patcher, id, output format, multisample, blend,
@@ -120,4 +132,20 @@ void recomp_hook_gxm_register(Cpu *c) {
 	if (!gxm_patcher_log()) return;
 	const uint32_t g = c->r[1];
 	fprintf(stderr, "    gxm patcher: register gxp %#x type %u frame %llu\n", g, g ? (RD8(g + 0x8) & 0xf) : 0, (unsigned long long)display_frames());
+}
+
+/* libgxm ring wait safeguard used by the Uncharted 1.03 module hook.
+ * If rendering has settled but the guest status word is still behind, stop
+ * waiting indefinitely. Keep the hook scoped to the Uncharted pack. */
+void recomp_hook_gxm_ring_wait(Cpu *c) {
+	const uint32_t word = c->r[1], expected = c->r[2];
+	if (!word || RD32(word) == expected) return;
+	extern void gfx_vis_settle(void);
+	for (int attempt = 0; attempt < 500; attempt++) {
+		gfx_vis_settle();
+		if (RD32(word) == expected) return;
+		plat_sleep_ns(1000000);
+	}
+	fprintf(stderr, "    gxm ring wait: settling stalled word %#x at frame %llu, expected %#x\n", word, (unsigned long long)display_frames(), expected);
+	WR32(word, expected);
 }

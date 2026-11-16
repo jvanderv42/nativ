@@ -75,6 +75,10 @@ int window_get_fullscreen(void); void window_set_fullscreen(int on);
 int window_raw_look(void); void window_set_raw_look(int on);
 int window_controls_count(void);
 int window_gyro_present(void);
+/* Per-game actions registered by its hooks; e.g., complete an open Uncharted puzzle. */
+typedef struct { const char *name, *about; void (*fn)(void); } GameAction;
+extern GameAction hook_game_actions[]; extern int hook_game_actions_n;
+void game_action_run(int index);
 void motion_recenter(void);
 void window_controls_row(int i, const char **action, const char **key, const char **pad);
 /* gfx_gpu.c: the GPU backend's internal resolution (1-gfx_gpu_render_scale_max) and F2's own cycle */
@@ -451,6 +455,13 @@ static void page_game(void) {
 			ImGui::SetNextItemWidth(-FLT_MIN); ImGui::InputText("##srv", srv, sizeof srv); if (ImGui::IsItemDeactivatedAfterEdit()) { settings_set_str("private_server", srv); settings_save(); }
 		}
 	}
+	for (int i = 0; i < hook_game_actions_n; i++) {
+		const GameAction &action = hook_game_actions[i];
+		ui::row(action.name, action.about ? action.about : "");
+		ImGui::PushID(i);
+		if (ImGui::Button("Do it")) { game_action_run(i); overlay_close(); }
+		ImGui::PopID();
+	}
 	if (game_option("uc_menu_blur")) {
 		ui::row("Menu blur correction", "Uncharted: smooths the menu and pause-screen blur by removing narrow sharp bands. Enabled by default; does not change gameplay depth of field.");
 		uc_menu_blur_toggle();
@@ -702,6 +713,9 @@ static void menu_game(void) {
 			settings_save();
 		}
 		ImGui::EndDisabled();
+	}
+	for (int i = 0; i < hook_game_actions_n; i++) {
+		if (ImGui::MenuItem(hook_game_actions[i].name)) game_action_run(i);
 	}
 	if (ImGui::MenuItem("Capture frame", "F12")) g_want_capture = true;
 	if (ImGui::MenuItem("Full menu…", "F10")) overlay_open();
