@@ -1,12 +1,7 @@
 name: Publish accepted Project Nativ Distribution 45
 
-# One-time publication of the user-tested distribution. Do not run on every push.
+# Historical one-time publication of Distribution 45; manual-only to avoid replaying outdated binaries.
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - '.github/workflows/publish-custom-4.yml'
   workflow_dispatch:
 
 permissions:
@@ -68,7 +63,7 @@ jobs:
 
           ## What's new
           - **Uncharted: Golden Abyss blur fix:** Corrects the narrow sharp bands in the title and pause-menu background blur; regular gameplay depth of field is preserved.
-          - **Blur toggle:** Enabled by default. Change it under **F10 → Display → Menu blur correction** or the top-edge **View** menu; the choice persists per game. `RECOMP_UC_MENU_BLUR=0|1` remains available as a diagnostic override.
+          - **Blur toggle:** Enabled by default. Change it under **F10 → Game → Menu blur correction** or the top-edge **Game** menu; the choice persists per game. `RECOMP_UC_MENU_BLUR=0|1` remains available as a diagnostic override.
           - **Experimental 120 FPS mode** with the custom frame-rate and virtual display timing enhancements.
           - **Improved DualShock 4/DualSense touch controls:** front/rear emulation, touchpad taps, drags and button modifiers.
           - **Improved touchscreen input** for streamed Windows gameplay on supported handhelds.

@@ -1,0 +1,90 @@
+name: Publish Project Nativ v0.1.5-custom.5
+
+# One-time release from current main source, not a reused Distribution 45 binary.
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/publish-custom-5.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  build:
+    name: Build complete Windows distribution from this commit
+    uses: ./.github/workflows/build-windows-distribution.yml
+    permissions:
+      contents: read
+
+  publish:
+    name: Verify artifacts and publish v0.1.5-custom.5
+    needs: build
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - name: Download freshly built distribution
+        uses: actions/download-artifact@v4
+        with:
+          name: nativ-windows-distribution-${{ github.run_number }}
+          path: dist
+
+      - name: Verify package and generate release metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          candidates=(dist/ProjectNativ-windows-candidate-*.zip)
+          test "${#candidates[@]}" -eq 1
+          test -s "${candidates[0]}"
+          (cd dist && sha256sum --check SHA256SUMS.txt)
+          unzip -tq "${candidates[0]}" | tail -1
+          grep -F "Source: $GITHUB_SHA" dist/BUILD-INFO.txt
+          mv "${candidates[0]}" dist/nativ-windows-v0.1.5-custom.5.zip
+          (cd dist && sha256sum nativ-windows-v0.1.5-custom.5.zip > SHA256SUMS-release.txt)
+          printf 'Release: v0.1.5-custom.5\nSource commit: %s\nWorkflow: %s\nBuild: fresh Windows distribution from main\nStatus: CI-built; menu relocation and new toggle require in-game validation\nExisting Uncharted games must be recompiled for the gunfire hook.\n' \
+            "$GITHUB_SHA" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > dist/BUILD-INFO-release.txt
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view v0.1.5-custom.5 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo 'Refusing to overwrite existing v0.1.5-custom.5 release' >&2
+            exit 1
+          fi
+          cat > release-notes.md <<'NOTES'
+          # Project Nativ v0.1.5-custom.5 — Uncharted gunfire fix and updated menus
+
+          A complete Windows distribution built from the updated custom fork's `main` branch. This release retains the existing controller touch improvements, frame-aware presentation, experimental 120 FPS mode, graphics and stability changes.
+
+          ## New since v0.1.5-custom.4
+          - **Uncharted gunfire sound fix:** Prevents an automatic fire-loop sound from continuing for approximately 15 seconds when its original stop request is overwritten during script startup. Verified with the AK47 at 30 and 120 FPS in the experimental build. The fix defaults to On.
+          - **Uncharted-specific toggle:** **F10 → Game → Gunfire sound fix**, also in the top-edge **Game** menu. The setting saves per game and supports `RECOMP_UC_FIRE_LOOP_FIX=0|1` override.
+          - **Menu blur control moved:** **F10 → Game → Menu blur correction**, also in the top-edge **Game** menu. The existing correction and saved setting remain unchanged.
+          - **Updated documentation:** README, technical notes, and release guidance now reflect the current fork.
+
+          ## Installation and verification
+          1. Download the complete Windows ZIP and extract the entire `ProjectNativ` folder.
+          2. Run `Project Nativ.exe` and supply your own supported, legally obtained PS Vita game and firmware files.
+          3. **Recompile Uncharted** to incorporate the updated gunfire hook.
+          4. Verify both toggles under F10 → Game, their saved states after restarting, and normal gameplay.
+          5. Keep a previous working distribution and game build for rollback.
+
+          **Validation status:** The underlying gunfire retry was observed working at 30 and 120 FPS. The subsequently added UI toggle and the relocated menu control have not yet been tested in-game in this release. Other automatic weapons remain less thoroughly tested. A single cancelled-shot event can still occur.
+
+          Includes a SHA-256 checksum and build provenance. The package contains no games or Sony firmware. Unofficial community fork; not an upstream release.
+          NOTES
+          gh release create v0.1.5-custom.5 \
+            dist/nativ-windows-v0.1.5-custom.5.zip \
+            dist/SHA256SUMS-release.txt dist/BUILD-INFO-release.txt \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title 'Project Nativ v0.1.5-custom.5 — Uncharted gunfire fix and updated menus' \
+            --notes-file release-notes.md \
+            --latest

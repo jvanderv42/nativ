@@ -1,7 +1,6 @@
 # Uncharted: Golden Abyss — menu in-focus slab (lab experiment 1)
 
-**Status:** visually accepted by the user; integration branch adds a saved toggle (on by default). The Windows integration build and cross-game regression tests remain pending. Based on Distribution 35
-(`experiment/memory-graphics-aspect-20261114`, `142107e`). Lives only in `nativ-llm-lab`.
+**Status:** integrated in `jvanderv42/nativ` on `main`, enabled by default with an Uncharted-specific saved setting. Originally investigated in the isolated lab with Distribution 35 (`experiment/memory-graphics-aspect-20261114`, `142107e`); the current source and menu locations are maintained in the main fork. Cross-game regression coverage remains limited.
 
 ## What was found
 
@@ -63,7 +62,7 @@ Look for `gpu: RECOMP_UC_MENU_BLUR: Uncharted menu in-focus slab removed` in std
 
 ## Integrated settings toggle
 
-For Uncharted, use **F10 → Display → Menu blur correction** (also available under the top-edge **View** menu). The correction defaults to **On**, can be switched off without restarting, and saves to the game's own settings.ini as `uc_menu_blur = 0|1`. Other games do not display the control.
+For Uncharted, use **F10 → Game → Menu blur correction** (also available under the top-edge **Game** menu). The correction defaults to **On**, can be switched off without restarting, and saves to the game's own settings.ini as `uc_menu_blur = 0|1`. Other games do not display the control.
 
 The existing `RECOMP_UC_MENU_BLUR=0|1` environment variable is retained as a diagnostic override. If set, it wins over the saved setting and disables the in-game control until the next launch without the override. The renderer reads the saved setting only for the two recognized Uncharted DOF programs.
 

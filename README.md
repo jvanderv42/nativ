@@ -3,7 +3,7 @@
 </p>
 
 <h1 align="center">Project Nativ Custom</h1>
-<p align="center"><strong>Play supported PS Vita games as native Windows applications, with improved controller touch input, optional 120 FPS playback, and targeted Uncharted visual corrections.</strong></p>
+<p align="center"><strong>Play supported PS Vita games as native Windows applications, with improved controller touch input, experimental 120 FPS playback, and targeted Uncharted visual and audio corrections.</strong></p>
 <p align="center">
   An unofficial Windows-focused fork of <a href="https://github.com/TheLostPantheon/nativ">Project Nativ</a>, developed and tested with Uncharted: Golden Abyss, Killzone: Mercenary, and DualShock 4 touch controls.
 </p>
@@ -17,16 +17,17 @@
   <a href="https://github.com/jvanderv42/nativ/actions"><img src="https://img.shields.io/badge/builds-GitHub%20Actions-2088ff" alt="GitHub Actions builds"></a>
 </p>
 
-> **The short version:** This unofficial Windows fork packages a complete Project Nativ environment and integrates improved PS Vita touch controls, frame-aware presentation, optional experimental 120 FPS gameplay, graphics and stability updates, and a toggleable Uncharted menu/pause blur correction (enabled by default). Download the current release from **[Releases](https://github.com/jvanderv42/nativ/releases)**.
+> **The short version:** This unofficial Windows fork packages a complete Project Nativ environment and integrates improved PS Vita touch controls, frame-aware presentation, optional experimental 120 FPS gameplay, graphics and stability updates, and toggleable Uncharted menu/pause blur and gunfire sound corrections (enabled by default). Download the current release from **[Releases](https://github.com/jvanderv42/nativ/releases)**.
 
 ## Why this fork exists
 
 [Project Nativ](https://github.com/TheLostPantheon/nativ) is a static-recompilation project that can rebuild supported PS Vita games into native desktop programs. That is a remarkable starting point, but playing those games on a PC—or streaming them to an Android handheld—introduces practical differences from the original Vita hardware.
 
-Two problems motivated this fork:
+Several practical problems motivated this fork:
 
 1. **Touch controls:** Uncharted: Golden Abyss uses the Vita's front touchscreen and rear touch surface. A DualShock 4 touchpad is a natural substitute, but brief taps, drag gestures, modifier buttons, and occasional cursor stuttering made some interactions awkward.
 2. **Streaming and frame pacing:** The Windows runtime could vary in presentation behavior with focus changes, the Windows taskbar, or an active streaming overlay. The goal was predictable gameplay and smoother presentation over Nightjar, including higher-refresh-rate experiments.
+3. **Uncharted-specific issues:** Narrow in-focus bands appeared in title/pause blur, and an early audio stop could be overwritten by gunfire script initialization, leaving an automatic weapon firing audibly long after its magazine emptied.
 
 Development and hands-on testing focused on a Windows gaming PC streaming to an **Astra 2 Android handheld** using [Nightjar Custom](https://github.com/jvanderv42/nightjar). The improvements are not limited in principle to that hardware, but other devices and configurations have not all been tested.
 
@@ -43,7 +44,8 @@ Development and hands-on testing focused on a Windows gaming PC streaming to an 
 | **Android handheld touchscreen input** | Improves recognition of short touches and longer presses when using the streamed handheld's screen. |
 | **Frame-aware presentation** | Reduces unnecessary rendering/presentation work to support more consistent Windows and streamed gameplay. |
 | **Optional 120 FPS mode** | Adds experimental 120 Hz timing and 30/60/120 FPS configuration options; results depend on the game and hardware. |
-| **Uncharted menu blur correction** | Removes distracting narrow sharp bands in the title and pause-menu depth-of-field blur; enabled by default, with a per-game On/Off toggle. |
+| **Uncharted menu blur correction** | Removes narrow sharp bands in title and pause-menu background blur, without changing gameplay depth of field; enabled by default, with a per-game On/Off toggle. |
+| **Uncharted automatic gunfire fix** | Retries an early stop request if a looping weapon-sound script overwrites it; verified with the AK47 at 30 and 120 FPS. Enabled by default, with a per-game toggle and diagnostic override. |
 | **Graphics and reliability updates** | Includes targeted render-target scaling, widescreen/visual settings, memory reuse and other stability improvements from the tested custom development branch. |
 | **Complete Windows distribution** | Packages the launcher, runtime, Python environment, toolchain, and supporting files for Windows setup without building the entire development environment yourself. |
 
@@ -51,7 +53,7 @@ These are custom-fork changes or packaging improvements layered on top of Projec
 
 ## Download and install
 
-**Get the current tested Windows distribution: [Project Nativ Custom — Releases](https://github.com/jvanderv42/nativ/releases).**
+**Get the latest available Windows distribution: [Project Nativ Custom — Releases](https://github.com/jvanderv42/nativ/releases).** Each release identifies its source commit and verification status. The gunfire correction was tested at 30 and 120 FPS in experimental Distribution 11; the subsequently added in-game toggle and rearranged menus still require a separate in-game check.
 
 1. Open **Releases**, select the latest stable custom release, and download the Windows distribution ZIP.
 2. Extract the **entire archive** to its own directory; do not launch the executable from inside the ZIP.
@@ -69,7 +71,7 @@ Keep a backup of any known-good distribution, game builds, and save data before 
 In **Uncharted: Golden Abyss**, a game-specific correction smooths the title and pause-menu background blur by removing narrow in-focus bands. It does **not** replace normal gameplay depth of field.
 
 - **Default:** On, including the first launch with no saved preference.
-- **In-game setting:** Press **F10 → Display → Menu blur correction**, or use the top-edge **View** menu.
+- **In-game setting:** Press **F10 → Game → Menu blur correction**, or use the top-edge **Game** menu.
 - **Saved preference:** On/Off changes are applied to subsequent relevant draws and stored in Uncharted's own `settings.ini`. The setting does not appear in other games.
 - **Diagnostic override:** `RECOMP_UC_MENU_BLUR=0` disables the correction and `RECOMP_UC_MENU_BLUR=1` forces it on for the process. When an override is set, the corresponding in-game control is unavailable until the game is restarted without it.
 
@@ -85,7 +87,7 @@ In **Uncharted: Golden Abyss**, automatic gunfire could keep playing for about 1
 - **Diagnostic override:** `RECOMP_UC_FIRE_LOOP_FIX=0` disables the correction and `RECOMP_UC_FIRE_LOOP_FIX=1` forces it on for the process. When an override is set, the in-game control is unavailable until the game is restarted without it.
 - **Trace:** `RECOMP_UC_SND_TRACE=1` logs each gunfire loop from start to end (`uc-snd:` and `uc-fl:` lines). Off by default.
 
-The correction only re-sends a stop the game itself already requested, and only for looping gun sounds. One shot of the cancelled burst may still be heard. Recompile Uncharted after updating: the correction is part of the game's own hooks. See [technical notes](docs/uncharted-ak47-early-stop.md).
+The correction only re-sends a stop the game itself already requested, and only for looping gun sounds. A cancelled burst can still start one shot; in the AK47 tests that shot was not perceptible to the tester. The fix was validated at 30 and 120 FPS with the environment override; the in-game toggle introduced afterward has not yet been tested on the device. Recompile Uncharted after updating: the correction is part of the game's own hooks. See [technical notes](docs/uncharted-ak47-early-stop.md).
 
 ## Controller and touchscreen setup
 
@@ -129,15 +131,15 @@ The game and firmware are supplied locally by the user. **No Sony firmware or co
 
 For a detailed explanation, see [Architecture](docs/architecture.md), [Runtime](docs/runtime.md) and [Developer documentation](docs/developers.md).
 
-## Stable releases, source and development
+## Releases, source and development
 
-The main branch now contains the accepted custom runtime improvements, including the default-on Uncharted blur toggle. The current release uses the user-tested **Distribution 45** Windows package, built from integration commit `a742f77ce088d94785b316dfe9bf6a122094fef3`. The published release tag points to the updated `main` source; runtime, game-pack and launcher files in that tag are unchanged from the tested build. Distribution 20 remains available as an older known-good recovery release.
+**Download the current build from [Releases](https://github.com/jvanderv42/nativ/releases).** The release page is the authoritative source for packaged Windows binaries, checksums and the source commit; older releases remain available for rollback. Do not substitute a historical package for a newer source tree: an old binary does not automatically include the new gunfire and menu changes.
 
-**For future downloads always use [Releases](https://github.com/jvanderv42/nativ/releases)** rather than a hard-coded version URL. Release numbers and build filenames can change without requiring a README edit.
+The current `main` branch combines the previously accepted touch-input, frame-pacing, 120 FPS, graphics and stability changes with the Uncharted menu blur and early-stop gunfire fixes. Both are game-specific and default to On. Use **F10 → Game** for their saved toggles. Changes to the menu layout and the newly added gunfire toggle require validation in-game even when the source compiles and packages successfully.
 
-**`main` is now the integrated custom development baseline**, following the reviewed and user-tested integration of the experimental work. Historical experiment branches remain available for reference; ongoing work should be based on `main` unless deliberately isolated. For reproducibility, use the corresponding release tag and the included build metadata, and note that the accepted distribution was packaged before the documentation-only release commit.
+The accepted earlier Distribution 45 is preserved under [v0.1.5-custom.4](https://github.com/jvanderv42/nativ/releases/tag/v0.1.5-custom.4); that older ZIP **predates the gunfire fix** and the blur-control menu relocation. The experimental AK47 fix was exercised at 30 and 120 FPS in the lab build, but the latest integrated source should be rebuilt and Uncharted recompiled before testing the in-game toggle.
 
-The Windows distribution is built using [GitHub Actions](https://github.com/jvanderv42/nativ/actions). Releases include a full Windows package, build provenance and a SHA-256 checksum file for integrity checking. Runtime changes in the distribution generally require recompiling existing games.
+This Windows distribution is built through [GitHub Actions](https://github.com/jvanderv42/nativ/actions). Release packages include a complete installation, provenance and SHA-256 checksums. Historical development branches remain for reference; continue normal development from `main` and isolate experiments on dedicated branches.
 
 ## Known limitations and feedback
 
@@ -146,7 +148,8 @@ The Windows distribution is built using [GitHub Actions](https://github.com/jvan
 - **Device coverage is limited.** Hands-on testing primarily covered the Windows/Android handheld/DualShock 4 workflow described above.
 - **Not every upstream game pack has been independently verified with this fork.**
 - **No bundled games or firmware.** You must supply your own supported files.
-- **Recompilation may be required** for existing installed game builds to pick up runtime changes.
+- **Recompile Uncharted after updating** to include the gunfire hook and other game-specific recompilation changes. Keep a known-good game build for rollback.
+- **Gunfire fix coverage is limited:** confirmed with the AK47 at 30 and 120 FPS; other automatic weapons and unusual transitions have not been exhaustively tested. A single cancelled-shot event can still occur.
 
 For a useful bug report, include the release or source commit, game title ID/version, Windows and GPU information, controller model and connection method, local-versus-streamed behavior, reproduction steps, and logs if available. Please remove personal information from logs before sharing.
 
