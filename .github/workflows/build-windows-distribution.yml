@@ -24,6 +24,9 @@ on:
       - runtime/core/memblock_holes.h
       - runtime/core/memblock_budget.h
       - runtime/gfx/usse.c
+      - runtime/gfx/usse_spirv.c
+      - packs/PCSA00029/hooks.c
+      - packs/PCSA00029/pack.toml
       - runtime/gfx/usse_internal.h
       - runtime/tests/memblock_budget_test.c
       - runtime/tests/usse_cf_test.c
