@@ -389,6 +389,28 @@ static void page_performance(void) {
 	{ char b[32]; std::snprintf(b, sizeof b, "%.0f fps", metrics_fps()); ImGui::PushFont(nullptr, ImGui::GetFontSize() * 1.6f); ImGui::TextUnformatted(b); ImGui::PopFont(); }
 	ui::rows_end();
 }
+/* Diagnostics are saved to the shared settings file, but the launch pipeline
+ * configures session logging before the game starts. Changes require relaunch. */
+static void page_diagnostics(void) {
+	if (!ui::rows_begin("diagnostics")) return;
+	ui::row("Session logging", "Off: no new session logs. Basic: session output and frame hitches. Detailed: adds Uncharted sound tracing. Verbose: also enables expensive NGS diagnostics.");
+	int level = settings_int("diag_log_level", 0);
+	if (level < 0 || level > 3) level = 0;
+	static const char *const names[4] = {"Off##diag", "Basic##diag", "Detailed##diag", "Verbose##diag"};
+	if (ui::segmented(names, 4, &level)) {
+		settings_set_int("diag_log_level", level);
+		settings_save();
+	}
+	ui::rows_end();
+	ImGui::Spacing();
+	ImGui::TextColored(ui::warning, "RELAUNCH REQUIRED");
+	ui::muted_wrapped("Logging changes are saved, but will not take effect until you exit and relaunch the game. A running session keeps its original logging configuration.");
+	const char *session = std::getenv("RECOMP_SESSION_LOG");
+	const char *active = std::getenv("RECOMP_DIAG_LOG_LEVEL");
+	ImGui::TextDisabled("Current session: %s", session && *session == '1' ? "logging enabled" : "session logging disabled");
+	if (active && *active) ImGui::TextDisabled("Started with diagnostic level: %s", active);
+	ui::muted_wrapped("Verbose logging can cause frame stutter or choppy audio. Use it only for troubleshooting. Environment-variable overrides may take precedence over the saved setting.");
+}
 static void page_game(void) {
 	prefs_load();
 	if (!ui::rows_begin("game")) return;
@@ -582,10 +604,10 @@ static void page_help(void) {
 
 /* ---- the full menu (build_ui): a panel over the paused, dimmed game -- the game's name and a Paused chip, the
  * sections down the side, the page, and Resume / Capture / Quit at the foot */
-enum { TAB_DISPLAY, TAB_PERF, TAB_GAME, TAB_CONTROLS, TAB_HELP, TAB_N };
-static const char *const g_tab_names[TAB_N] = {"Display", "Performance", "Game", "Controls", "Help"};
+enum { TAB_DISPLAY, TAB_PERF, TAB_GAME, TAB_CONTROLS, TAB_DIAGNOSTICS, TAB_HELP, TAB_N };
+static const char *const g_tab_names[TAB_N] = {"Display", "Performance", "Game", "Controls", "Diagnostics", "Help"};
 static const char *const g_tab_blurbs[TAB_N] = {"Resolution, picture and image quality", "Frame rate and on-screen stats",
-	"Frame rate, view and detail options, volume", "Keyboard, mouse, controller, gyro and camera", "Shortcuts and about"};
+	"Frame rate, view and detail options, volume", "Keyboard, mouse, controller, gyro and camera", "Logging and troubleshooting (relaunch required)", "Shortcuts and about"};
 static int g_select_tab = -1;   /* the bar asked for this page (open_page): selected on the menu's next frame, then -1 */
 static int g_section = TAB_DISPLAY;
 static void open_page(int tab) { g_select_tab = tab; overlay_open(); }
@@ -613,7 +635,7 @@ static void build_ui(void) {
 	const float foot = ImGui::GetFrameHeightWithSpacing() + em * 0.9f;
 	/* the sections; a controller's L1 / R1 (or Ctrl+Tab, Ctrl+Shift+Tab) step them in the sidebar's order -- the sidebar and
 	 * the page are separate panels the D-pad doesn't cross -- and the new page's first row takes the focus */
-	static const int order[TAB_N] = {TAB_DISPLAY, TAB_GAME, TAB_CONTROLS, TAB_PERF, TAB_HELP};
+	static const int order[TAB_N] = {TAB_DISPLAY, TAB_GAME, TAB_CONTROLS, TAB_PERF, TAB_DIAGNOSTICS, TAB_HELP};
 	static bool focus_page;
 	if (!ImGui::IsAnyItemActive()) {
 		const bool ctrl = io.KeyCtrl, shift = io.KeyShift; int step = 0;
@@ -644,7 +666,7 @@ static void build_ui(void) {
 	ImGui::TextDisabled("%s", g_tab_blurbs[g_section]);
 	if (focus_page) { ImGui::SetKeyboardFocusHere(); focus_page = false; }   /* (the page's first control) */
 	ImGui::Dummy(ImVec2(0, em * 0.2f));
-	static void (*const pages[TAB_N])(void) = {page_display, page_performance, page_game, page_controls, page_help};
+	static void (*const pages[TAB_N])(void) = {page_display, page_performance, page_game, page_controls, page_diagnostics, page_help};
 	pages[g_section]();
 	ImGui::EndChild();
 	/* the foot */
