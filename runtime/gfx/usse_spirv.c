@@ -1242,6 +1242,29 @@ static int ldst_repeated_i32mad_sa(const UOp *code, int j, int bank, int word) {
 	}
 	return -1;
 }
+/* Diagnostic only: confirm when the narrowly scoped repeated-I32MAD rule
+ * supplies a pointer base. This distinguishes a successful provenance match
+ * from a shader that merely compiled through an unrelated path. */
+static void trace_repeated_ldst_origin(const UsseProgram *prog, const UOp *code, int n) {
+	if (!getenv("RECOMP_UC103_LDST_TRACE")) return;
+	static unsigned reports;
+	for (int i = 0; i < n; i++) {
+		const UOp *op = &code[i];
+		if (op->op != OP_LDST || op->sub2) continue;
+		for (int j = i - 1; j >= 0; j--) {
+			const UOp *w = &code[j];
+			if (w->op == OP_NOP || w->op == OP_SMLSI || w->op == OP_SMBO || w->op == OP_BR || w->op == OP_KILL) continue;
+			int sa = ldst_repeated_i32mad_sa(code, j, op->s0.bank, op->s0.num);
+			if (sa >= 0) {
+				if (__atomic_fetch_add(&reports, 1u, __ATOMIC_RELAXED) < 32u)
+					fprintf(stderr, "    uc103 ldst: repeated-origin shader=%#x instruction=%d writer=%d base=%u.%u SA=%d\\n",
+					        usse_program_hash(prog), i, j, op->s0.bank, op->s0.num, sa);
+				break;
+			}
+			if (writes_word(w, op->s0.bank, op->s0.num)) break;
+		}
+	}
+}
 static int ldst_pointer_sa(const UOp *code, int i) {
 	const UOp *op = &code[i];
 	if (op->s0.bank == BK_SA) return op->s0.num;
@@ -2079,6 +2102,8 @@ SpirvModule usse_spirv_translate(const UsseProgram *prog, const UsseVertexLayout
 		int unit = fl->iters[i].tex_unit;
 		if (unit >= 0 && unit < 16 && sampler_slot(&g, unit) < 0 && g.nsmp < 16) g.smp_units[g.nsmp++] = unit;
 	}
+
+	trace_repeated_ldst_origin(prog, code, n);
 
 	/* register file: Private word arrays, zero-initialised (OpVariable's Initializer) */
 	uint32_t t_u = t_uint(s);
