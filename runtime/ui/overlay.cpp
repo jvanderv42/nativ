@@ -403,7 +403,7 @@ static void page_diagnostics(void) {
 	}
 	ui::rows_end();
 	ImGui::Spacing();
-	ImGui::TextColored(ui::warning, "RELAUNCH REQUIRED");
+	ImGui::TextColored(ui::accent, "RELAUNCH REQUIRED");
 	ui::muted_wrapped("Logging changes are saved, but will not take effect until you exit and relaunch the game. A running session keeps its original logging configuration.");
 	const char *session = std::getenv("RECOMP_SESSION_LOG");
 	const char *active = std::getenv("RECOMP_DIAG_LOG_LEVEL");
