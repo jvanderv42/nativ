@@ -511,11 +511,11 @@ static void page_game(void) {
 		uc_fire_loop_fix_toggle();
 	}
 	if (game_option("uc_halo_isolation")) {
-		ui::row("Character halo investigation", "Uncharted 1.03 only. Compares the normal scene with its final composite bypassed. Diagnostic only: brightness and other visual effects may be incorrect in the bypass view. Does not change the game files.");
+		ui::row("Character halo investigation", "Uncharted 1.03 only. Compares normal rendering with late compositing passes isolated. Diagnostic only: other visual effects may be missing or incorrect. Does not change game files.");
 		int mode = settings_int("uc_halo_isolation", 0);
-		if (mode < 0 || mode > 1) mode = 0;
-		static const char *const modes[] = {"Normal##ucHalo", "Before final composite##ucHalo"};
-		if (ui::segmented(modes, 2, &mode)) { settings_set_int("uc_halo_isolation", mode); settings_save(); }
+		if (mode < 0 || mode > 2) mode = 0;
+		static const char *const modes[] = {"Normal##ucHalo", "Skip late overlays##ucHalo", "Before final composite##ucHalo"};
+		if (ui::segmented(modes, 3, &mode)) { settings_set_int("uc_halo_isolation", mode); settings_save(); }
 		if (mode) ui::muted_wrapped("Diagnostic view active. Compare Drake's outline against Normal, then restore Normal for gameplay.");
 	}
 	ui::row("Volume");
