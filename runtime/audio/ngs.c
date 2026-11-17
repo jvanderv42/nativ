@@ -27,8 +27,13 @@
 
 /* Explicit numeric levels: RECOMP_NGS_DEBUG=0 must not activate verbose audio tracing. */
 static int ngs_debug_level(void) {
-	const char *value = getenv("RECOMP_NGS_DEBUG");
-	return value && *value ? atoi(value) : 0;
+	static int level = -1;
+	if (level < 0) {
+		const char *value = getenv("RECOMP_NGS_DEBUG");
+		const int requested = value && *value ? atoi(value) : 0;
+		level = requested > 0 ? requested : 0;
+	}
+	return level;
 }
 
 
