@@ -5597,7 +5597,21 @@ void gfx_gpu_draw(const GfxDraw *d) {
 			env_override = e && *e ? (atoi(e) != 0 ? 2 : 1) : 0;
 		}
 		const int on = env_override ? env_override == 2 : settings_int("uc_menu_blur", 1) != 0;
-		if (on && fdraw.sa[18].f <= 0.25f && fdraw.sa[18].f >= 0.0f && fdraw.sa[19].f >= 4.0f && fdraw.sa[16].f > 0.0f) {
+		const int qualifies = fdraw.sa[18].f <= 0.25f && fdraw.sa[18].f >= 0.0f && fdraw.sa[19].f >= 4.0f && fdraw.sa[16].f > 0.0f;
+		/* Optional, bounded diagnostics for the already-mapped v1.03 composites.
+		 * Report the original draw parameters and the decision without changing gameplay or guest memory. */
+		static int dof_trace = -1;
+		static unsigned dof_samples[4];
+		if (dof_trace < 0) {
+			const char *e = getenv("RECOMP_UC_DOF_TRACE");
+			dof_trace = e && *e && *e != '0';
+		}
+		const uint32_t hash = usse_program_hash(fp);
+		const unsigned slot = hash == 0xb8a9cc91u ? 0u : hash == 0xaecc460eu ? 1u : hash == 0x7de431e4u ? 2u : 3u;
+		if (dof_trace && dof_samples[slot]++ < 12)
+			fprintf(stderr, "    uc-dof: hash=%#x enabled=%d qualifies=%d params=(%.6g,%.6g,%.6g,%.6g)\n",
+			        hash, on, qualifies, fdraw.sa[16].f, fdraw.sa[17].f, fdraw.sa[18].f, fdraw.sa[19].f);
+		if (on && qualifies) {
 			fdraw.sa[17].f = -30000.0f;
 			if (!said++) fprintf(stderr, "    gpu: RECOMP_UC_MENU_BLUR: Uncharted menu in-focus slab removed (g_vDofParams z %g, w %g)\n", fdraw.sa[18].f, fdraw.sa[19].f);
 		}
