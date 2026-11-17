@@ -1305,7 +1305,7 @@ static int uc_fl_forced(void) {   /* RECOMP_UC_FIRE_LOOP_FIX: 0 not set, 1 force
 	if (f < 0) { const char *e = getenv("RECOMP_UC_FIRE_LOOP_FIX"); f = e && *e ? (atoi(e) != 0 ? 2 : 1) : 0; }
 	return f;
 }
-static void uc_fl_refresh(void) { if (!uc_fl_forced()) uc_fl_setting = settings_int("uc_fire_loop_fix", game_addr("uc_snd_handler_base") == 0x81965f40u ? 0 : 1) != 0; }
+static void uc_fl_refresh(void) { if (!uc_fl_forced()) uc_fl_setting = settings_int("uc_fire_loop_fix", 1) != 0; }
 static int uc_fl_fix(void) {
 	if (uc_fl_forced()) return uc_fl_forced() == 2;
 	if (uc_fl_setting < 0) uc_fl_refresh();
