@@ -8,9 +8,9 @@ Ported from [frankyfife/nativ_ff](https://github.com/frankyfife/nativ_ff), with 
 
 ## Version behavior
 
-- **1.00:** Existing main-fork graphics/touch/120 FPS/audio fixes, plus puzzle completion and chapter unlock actions.
+- **1.00:** Existing main-fork graphics/touch/120 FPS/audio fixes, plus puzzle completion. Chapter unlock is intentionally excluded.
 - **1.03:** Reference fork's function/instruction hook map, guest addresses, 1.03 seed, and libgxm wait safeguard. Only puzzle completion is wired into the Game menu; chapter unlock is intentionally excluded.
-- The 1.00-specific gunfire early-stop hook addresses have **not** been mapped for 1.03. The 1.03 Game menu does not advertise this fix. Likewise, the menu-blur toggle is held back until 1.03 shaders are checked. Neither should be assumed fixed on 1.03.
+- The 1.00-specific gunfire early-stop hook addresses have **not** been mapped for 1.03. The 1.03 Game menu does not advertise this fix. Native 1.03 menu-blur composite shaders have been identified and the existing toggle is now enabled for experimental testing. The 1.03 DOF correction is not yet confirmed by an in-game A/B test.
 
 ## How to test
 
@@ -43,6 +43,22 @@ Use **unmodified version 1.03 shader bundles**. Do not copy 1.00 shader binaries
 The reference fork's `dev/uc_shaders103.py` helper was a compatibility workaround: it constructed a modified copy of the 1.03 update, replacing `game/bspsh.bin` (fragment shaders) and `game/bsvsh.bin` (vertex shaders) with the original 1.00 bundles. It did not translate the new shaders or implement the blur correction on native 1.03 assets. That helper is removed from this experimental branch because this project is pursuing native 1.03 support.
 
 Start by recompiling 1.03 with its original assets. Collect shader diagnostics/captures to identify the 1.03 title-menu and pause-menu composite programs and confirm their uniform layout. Adapt the narrowly scoped blur correction only after identifying the exact shaders. The 1.03 blur toggle remains unavailable until that validation passes. Document any software-shader fallback, attachment misalignment, or unexpected rendering separately.
+
+## Native 1.03 menu/pause DOF correction candidate — November 16, 2026
+
+The three original-asset VFC files have been examined directly: `frame_2925.vfc` (277 draws), `frame_3717.vfc` (411 draws), and `frame_4549.vfc` (562 draws). Their complete draw records, native fragment-program binaries, and default-uniform buffers establish:
+
+| 1.03 composite | Fragment program | GXP content hash | Draw | Captured g_vDofParams |
+|---|---|---|---|---|
+| Title menu | `0x1fa2a4c8` | `0x7de431e4` | 267 in frame 2925 | `(1.0, 10.139, 0.1, 10.0)` |
+| Paused cinematic | `0x1fa2c288` | `0x8b9e8245` | 403 in frame 3717 | `(1.0, 24.903, 0.1, 10.0003)` |
+| Paused gameplay | `0x1fa2c288` | `0x8b9e8245` | 551 in frame 4549 | `(1.0, 2.7, 0.1, 10.0)` |
+
+Both versions place `g_vDofParams` at default-uniform floats 16–19, and both 1.03 composites consume the sharp full-resolution scene and 192×96 blurred scene. The sampled focus parameters reproduce the narrow in-focus band for which the **working 1.00 correction** already adjusts only the draw's temporary SA register copy.
+
+The experimental change adds the two **native 1.03 hashes only** to the renderer's existing four-condition menu/pause correction; the algorithm, threshold gate, saved setting, default On, environment override, and 1.00 hashes stay unchanged. The existing `F10 → Game → Menu blur correction` toggle is enabled for 1.03. No shader bundle is replaced.
+
+**Acceptance still requires in-game A/B validation** at title and pause screens: verify that Off exhibits the sharp sliver, On removes it, the setting persists, and gameplay depth of field stays unchanged. Check the `gpu: RECOMP_UC_MENU_BLUR: Uncharted menu in-focus slab removed` log entry when On. The hash+uniform analysis does not independently prove that a new 1.03 shader executes the same blend math; if the test does not behave as expected, investigate the original 1.03 shader instruction sequence before modifying parameters further.
 
 ### Evidence required before merging
 
