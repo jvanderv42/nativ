@@ -93,8 +93,12 @@ void (*hook_stall_long)(uint64_t stall_us);
  * to a hook on the game's own thread (see Uncharted's puzzle completion). */
 GameAction hook_game_actions[GAME_ACTIONS_MAX];
 int hook_game_actions_n;
+void game_action_add_labeled(const char *name, const char *about, const char *button_label, void (*fn)(void)) {
+	if (hook_game_actions_n < GAME_ACTIONS_MAX) hook_game_actions[hook_game_actions_n++] = (GameAction){name, about, button_label, fn};
+}
+/* Existing game actions retain a neutral default label. */
 void game_action_add(const char *name, const char *about, void (*fn)(void)) {
-	if (hook_game_actions_n < GAME_ACTIONS_MAX) hook_game_actions[hook_game_actions_n++] = (GameAction){name, about, fn};
+	game_action_add_labeled(name, about, "Run action", fn);
 }
 void game_action_run(int index) {
 	if (index >= 0 && index < hook_game_actions_n) hook_game_actions[index].fn();
