@@ -590,8 +590,10 @@ def cmd_run(g, frames):
     OUT = g.OUT
     os.makedirs(os.path.join(OUT, "captures"), exist_ok=True)   # F12 in the window saves captures here
     # RUN_ENV: the game's play settings (correctness fixes it needs); TEST_ENV is the gate's and pins the software renderer -- applying it here ran every manual play on the interpreter
-    # session.log: this session's stderr (the terminal still shows it; the one before is session.prev.log), with the hitch
-    # log on for frames over 50 ms -- what a first-use stutter did, from the player's own session (RECOMP_HITCH_LOG=0: off)
+    # Session logging is opt-in for normal play. RECOMP_SESSION_LOG=1 writes session.log and
+    # rotates the previous session; without it, no session files are created or modified.
+    # Diagnostics may be enabled separately (RECOMP_NGS_DEBUG, RECOMP_UC_SND_TRACE, etc.).
+    # RECOMP_HITCH_LOG controls frame-hitch diagnostics when session logging is enabled.
     # RECOMP_SHADER_RECIPES_SHIPPED: packs/<title>/shaders.txt, the shader recipes that ship (gfx_gpu.c: built as the game registers each program)
     shipped = os.path.join(PACKS, g.PACK, "shaders.txt")
     icon = os.path.join(ROOT, "assets", "brand", "png", "icon-" + ("macos-512" if sys.platform == "darwin" else "256") + ".png")   # (the window's: window.c)
@@ -606,9 +608,18 @@ def cmd_run(g, frames):
         rc = subprocess.run(ENV["ATIV_PRE_LAUNCH"], shell=True).returncode
         if rc: sys.exit(rc)
     try:
-        if os.path.isfile(os.path.join(OUT, "session.log")): os.replace(os.path.join(OUT, "session.log"), os.path.join(OUT, "session.prev.log"))
         e = game_env(g, g.RUN_ENV.split() + (ENV.get("EXTRA_ENV") or "").split(), fixed)
-        rc = tee_run(g.exe_argv(os.path.join(OUT, g.EXE)) + [g.BASE + ".img", g.entry(), frames or "100000000000"], e, OUT, os.path.join(OUT, "session.log"))
+        argv = g.exe_argv(os.path.join(OUT, g.EXE)) + [g.BASE + ".img", g.entry(), frames or "100000000000"]
+        if ENV.get("RECOMP_SESSION_LOG") == "1":
+            if os.path.isfile(os.path.join(OUT, "session.log")):
+                os.replace(os.path.join(OUT, "session.log"), os.path.join(OUT, "session.prev.log"))
+            rc = tee_run(argv, e, OUT, os.path.join(OUT, "session.log"))
+        else:
+            # Do not create log files or continuously write verbose diagnostics to a terminal.
+            # The normal game crash handler remains active; enable logging for investigations.
+            p = start_game(argv, env=e, cwd=OUT, stderr=subprocess.DEVNULL)
+            try: rc = p.wait()
+            except KeyboardInterrupt: p.terminate(); rc = p.wait()
     finally:
         if ENV.get("ATIV_POST_EXIT"): subprocess.run(ENV["ATIV_POST_EXIT"], shell=True)
     sys.exit(rc)
