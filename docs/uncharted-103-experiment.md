@@ -10,7 +10,7 @@ Ported from [frankyfife/nativ_ff](https://github.com/frankyfife/nativ_ff), with 
 
 - **1.00:** Existing main-fork graphics/touch/120 FPS/audio fixes, plus puzzle completion. Chapter unlock is intentionally excluded.
 - **1.03:** Reference fork's function/instruction hook map, guest addresses, 1.03 seed, and libgxm wait safeguard. Only puzzle completion is wired into the Game menu; chapter unlock is intentionally excluded.
-- The 1.00-specific gunfire early-stop hook addresses have **not** been mapped for 1.03. The 1.03 Game menu does not advertise this fix. Native 1.03 menu-blur composite shaders have been identified and the existing toggle is now enabled for experimental testing. The 1.03 DOF correction is not yet confirmed by an in-game A/B test.
+- The seven Scream gunfire audio hooks have been mapped to 1.03 and exercised with `RECOMP_UC_SND_TRACE=1`. The 1.03 Game menu still does not advertise the fix until regression testing is complete; `RECOMP_UC_FIRE_LOOP_FIX=0|1` provides an explicit test override. Native 1.03 menu-blur composite shaders are identified, with the existing toggle enabled for experimental testing. Exact visual parity with 1.00 remains an acceptance criterion.
 
 ## How to test
 
@@ -30,11 +30,11 @@ The user's unmodified 1.03 game launches on the Vulkan GPU backend (RTX 5090), b
 
 The second 1.03 test's `RECOMP_UC103_LDST_TRACE=1` log identifies the same missing SA-pointer provenance in all five unsupported vertex shaders (GXP hashes `0xcd4b5b2f`, `0xf0279875`, `0x6045cc65`, `0x2e9ab44f`, `0x3678c2f9`). Each repeatedly computes bone pointers using an `SMLSI`-configured two-repeat `I32MAD`; the `LDST` reads a later PA register (for example PA6) written by the second repeat. Previously `writes_word` recognized only the first PA destination and returned unknown provenance. A tightly scoped candidate recognizes **only** repeated `I32MAD` with a full-width SA addend, computing destination and SA register stepping from preceding `SMLSI`/`SMBO` state. Ordinary code paths and software fallback remain intact if provenance is still unknown.
 
-**Not yet game-verified.** Test native unmodified 1.03 at 30 FPS and 1× render scale. Compare the ten original unsupported-program messages, `software path` counts, target downloads, visual correctness (especially skinned characters and their attachments), and frame pacing before and after. A successful translation is not sufficient by itself; GPU geometry must agree with the expected scene. Keep `RECOMP_UC103_LDST_TRACE=1` for this first validation, but remove `RECOMP_NGS_DEBUG=1` during graphics benchmarking because it generated about 47 MB of unbounded Scream voice parameter logs in the second test. The 1.03 AK47 symptom was present in the accompanying recording, but no game-specific `uc-snd:`/`uc-fl:` events appeared; 1.03 sound hook addresses remain unverified.
+**Not yet game-verified.** Test native unmodified 1.03 at 30 FPS and 1× render scale. Compare the ten original unsupported-program messages, `software path` counts, target downloads, visual correctness (especially skinned characters and their attachments), and frame pacing before and after. A successful translation is not sufficient by itself; GPU geometry must agree with the expected scene. Keep `RECOMP_UC103_LDST_TRACE=1` for this first validation, but remove `RECOMP_NGS_DEBUG=1` during graphics benchmarking because it generated about 47 MB of unbounded Scream voice parameter logs in the second test. The original graphics-focused recording did not include `uc-snd:`/`uc-fl:` events. Subsequent 1.03 audio tracing verified that the mapped hooks execute. In a correction-enabled session, one same-frame start/stop was followed by `stop-lost`, a single retry, and a control value returning to zero; the user did not hear a stuck loop. Earlier fix-disabled videos reproduce the audible symptom, but their lower-level NGS logs cannot independently correlate the game-level stop to a specific voice.
 
 The experimental branch adds **read-only shader translation diagnostics** behind `RECOMP_UC103_LDST_TRACE=1` in `runtime/gfx/usse_spirv.c`. This reports decoded instructions and marks the last writer of the LDST base register, capped at 32 failures. It does not fix or bypass the unsupported instruction. With the newest experimental distribution, capture a fresh session on native 1.03 shaders using that environment setting, entering gameplay where the failure occurs. Compare the `uc103 ldst:` output to `usse.c`'s CPU interpreter and develop a narrowly scoped SA-pointer origin rule only when the required provenance is verified. Validate with the already provided VFC captures and new test runs before accepting a translator change.
 
-Maintain the proven 1.00 gameplay and AK47 behavior; do not merge to `main` until user approval. The 1.03 AK47 sound-control mapping and native 1.03 menu-blur shader mapping remain separate subsequent work.
+Maintain the proven 1.00 gameplay and AK47 behavior; do not merge to `main` until user approval. The 1.03 AK47 sound-control and native menu-blur shader mappings are implemented experimentally; both require further regression testing.
 
 ### Native 1.03 shader support (Option B)
 
@@ -42,7 +42,7 @@ Use **unmodified version 1.03 shader bundles**. Do not copy 1.00 shader binaries
 
 The reference fork's `dev/uc_shaders103.py` helper was a compatibility workaround: it constructed a modified copy of the 1.03 update, replacing `game/bspsh.bin` (fragment shaders) and `game/bsvsh.bin` (vertex shaders) with the original 1.00 bundles. It did not translate the new shaders or implement the blur correction on native 1.03 assets. That helper is removed from this experimental branch because this project is pursuing native 1.03 support.
 
-Start by recompiling 1.03 with its original assets. Collect shader diagnostics/captures to identify the 1.03 title-menu and pause-menu composite programs and confirm their uniform layout. Adapt the narrowly scoped blur correction only after identifying the exact shaders. The 1.03 blur toggle remains unavailable until that validation passes. Document any software-shader fallback, attachment misalignment, or unexpected rendering separately.
+Start by recompiling 1.03 with its original assets. Collect shader diagnostics/captures to identify the 1.03 title-menu and pause-menu composite programs and confirm their uniform layout. Adapt the narrowly scoped blur correction only after identifying the exact shaders. The 1.03 blur toggle is now exposed for experimental testing, pending in-game visual acceptance. Document any software-shader fallback, attachment misalignment, or unexpected rendering separately.
 
 ## Native 1.03 menu/pause DOF correction candidate — November 16, 2026
 
@@ -69,3 +69,12 @@ The experimental change adds the two **native 1.03 hashes only** to the renderer
 - Any divergences from the reference fork documented with logs and exact commit/build.
 
 **No in-game validation is implied by a green GitHub Actions Windows distribution build.** Such a build verifies packaging and generic runtime checks; the proprietary game must be supplied and recompiled separately.
+
+## Evidence checkpoint — November 17, 2026
+
+- Distribution 58 graphics testing identified frame-time spikes and repeated render-target downloads; this does not by itself prove that the five original LDST shaders still fail translation. Separate the translator's unsupported-program messages from other software fallback causes.
+- The repeated-`I32MAD` SA-pointer provenance candidate is already in `runtime/gfx/usse_spirv.c`. A bounded `uc103 ldst: repeated-origin` trace now reports when that rule matches a load. The trace is diagnostic only; it does not change shader output or rendering behavior. Keep `RECOMP_UC103_LDST_TRACE=1` for the first new build validation, then disable it for performance comparisons.
+- Test native 1.03 at 30 FPS/1× first. Compare shader failure counts, software fallback causes, target downloads, geometry correctness, and frame times against Distribution 58. The candidate cannot be accepted from compilation success alone.
+- The fix-enabled AK47 trace shows a recovered lost-stop state. Retain the correction experimentally, avoid changing it without new contradictory evidence, and test ordinary weapon behavior and audio timing separately.
+- Preserve the v1.00 DOF algorithm. Compare the 1.03 title, gameplay pause, and cinematic pause captures visually with the accepted v1.00 output before adjusting parameters.
+- No changes to `main` or public release are authorized by this checkpoint.
