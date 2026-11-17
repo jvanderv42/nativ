@@ -1272,7 +1272,7 @@ static void uc_snd_line(Cpu *c, const char *what, uint32_t rec, uint32_t handle,
 	const uint32_t sp = c->r[13];
 	for (uint32_t k = 0, n = 0; k < 128 && n < 8 && at + 12 < sizeof chain; k++) {   /* the saved return addresses: odd (Thumb), inside the game's code */
 		const uint32_t v = RD32(sp + 4 * k);
-		if ((v & 1) && v >= 0x81000000u && v < 0x818fe484u) { at += (size_t)snprintf(chain + at, sizeof chain - at, "%s%#x", n++ ? " " : "", v); }
+		if ((v & 1) && v >= 0x81000000u && v < game_addr("uc_snd_code_end")) { at += (size_t)snprintf(chain + at, sizeof chain - at, "%s%#x", n++ ? " " : "", v); }
 	}
 	if (rec) fprintf(stderr, "    uc-snd: t_ms=%llu frame=%llu event=%s rec=%#x handle=%#x index=%d cat=%#x name=%#x state=%u attach=%u f5c=%#x f8c=%#x extra=%#x lr=%#x chain=%s\n",
 	                 (unsigned long long)(ms - t0), (unsigned long long)display_frames(), what, rec, handle, (int)(int16_t)RD32(rec + 0x10), RD32(rec + 0x48), RD32(rec + 0x54),
@@ -1305,7 +1305,7 @@ static int uc_fl_forced(void) {   /* RECOMP_UC_FIRE_LOOP_FIX: 0 not set, 1 force
 	if (f < 0) { const char *e = getenv("RECOMP_UC_FIRE_LOOP_FIX"); f = e && *e ? (atoi(e) != 0 ? 2 : 1) : 0; }
 	return f;
 }
-static void uc_fl_refresh(void) { if (!uc_fl_forced()) uc_fl_setting = settings_int("uc_fire_loop_fix", 1) != 0; }
+static void uc_fl_refresh(void) { if (!uc_fl_forced()) uc_fl_setting = settings_int("uc_fire_loop_fix", game_addr("uc_snd_handler_base") == 0x81965f40u ? 0 : 1) != 0; }
 static int uc_fl_fix(void) {
 	if (uc_fl_forced()) return uc_fl_forced() == 2;
 	if (uc_fl_setting < 0) uc_fl_refresh();
@@ -1314,7 +1314,7 @@ static int uc_fl_fix(void) {
 static int uc_fl_on(void) { return uc_fl_fix() || uc_snd_on(); }
 static uint32_t uc_fl_handler(uint32_t h) {   /* Scream's handle -> block-sound handler (fn_815a45c2); 0: that sound is over */
 	if (!(h >> 31) || ((h >> 24) & 0x1f) != 5) return 0;
-	const uint32_t a = 0x81982400u + ((h >> 16) & 0xff) * 0x228u;
+	const uint32_t a = game_addr("uc_snd_handler_base") + ((h >> 16) & 0xff) * 0x228u;
 	return RD32(a) == h ? a : 0;
 }
 static int uc_fl_eligible(uint32_t rec) { const uint32_t cat = RD32(rec + 0x48); return (RD8(rec + 0x8c) & 1) && (cat == 0x1c || cat == 0x1d); }
