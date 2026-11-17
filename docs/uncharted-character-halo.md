@@ -40,3 +40,42 @@ Existing F10 controls already allow testing in one session, without any new dist
 ## Pre-merge follow-up
 
 Do not claim the halo is fixed or implement a broad visual patch until baseline fidelity and a targeted cause have been established. Treat optional attenuation of an original-game halo as a separate enhancement from implementing v1.03 support. Defer the separate 4x menu seam issue for later.
+
+
+## November 17 update: controlled v1.00 and v1.03 comparison
+
+Older v1.00 AK47 gameplay captures (ak47-30fps-onset.jpg, ak47-6-detailed.jpg,
+ak47-stuck-sound-onset-frames.png) show Drake in the ruins without the prominent
+bright silhouette in v1.03 videos. These frames are *not* location/camera/lighting
+matched, so the comparison raises a credible v1.03 regression hypothesis but does
+not prove it. Original Vita reviews remain a separate historical observation.
+
+The pack does **not** configure RECOMP_SSAO; Project Nativ's optional SSAO
+postprocess is not enabled for this title, so disabling it is not a useful halo
+diagnostic in the current build.
+
+## Consolidated experimental v1.03 diagnostic — one build
+
+The 1.03-only F10 → Game option **Character halo investigation** defaults to
+**Normal** and offers **Before final composite**. Its sole action is bypassing
+fragment program `0x1fa3c1c8`, which VFC frame_2177 draw 353 records sampling
+processed target `0x19d40000` and writing to the original world target
+`0x1a1c00c0`. No guest shader/program bytes, audio, physics or v1.00 code
+paths are modified.
+
+- Expect the bypass image to look unusually bright, dark, tonally incorrect,
+  or to omit other effects. This is **not** a visual-quality mode.
+- At the same camera location where the halo appears, compare Drake's **edge
+  shape**, not overall brightness, between Normal and Before final composite.
+- If the edge is present in both, focus on primary character/world shaders,
+  lighting or earlier depth-dependent passes. If only Normal has the edge,
+  the final composite or its intermediate inputs merit focused investigation.
+- Additionally compare FXAA Off vs FXAA On using the existing Display menu
+  (no rebuild needed). Do not change resolution/camera between comparisons.
+- Restore **Normal** after the A/B comparison. Do not keep the bypass enabled
+  for gameplay.
+- Remains a *diagnostic* and does not establish the specific cause or eliminate
+  the halo. No original Vita parity claim until matched footage is available.
+
+The investigation is isolated to the experimental branch. Do not merge the
+bypass into the main release without a decision to remove or hide it.
