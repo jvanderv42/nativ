@@ -404,12 +404,30 @@ static void page_diagnostics(void) {
 	ui::rows_end();
 	ImGui::Spacing();
 	ImGui::TextColored(ui::accent, "RELAUNCH REQUIRED");
-	ui::muted_wrapped("Logging changes are saved, but will not take effect until you exit and relaunch the game. A running session keeps its original logging configuration.");
+	ui::muted_wrapped("Your selection is saved for the next launch. It does not change diagnostics in this running session.");
+	const char *started = std::getenv("RECOMP_DIAG_LOG_LEVEL");
+	int started_level = started ? std::atoi(started) : 0;
+	if (started_level < 0 || started_level > 3) started_level = 0;
+	static const char *const levels[] = {"Off", "Basic", "Detailed", "Verbose"};
+	ImGui::TextDisabled("Saved for next launch: %s", levels[level]);
+	ImGui::TextDisabled("Selected at launch: %s", levels[started_level]);
+	if (started_level != level)
+		ImGui::TextColored(ui::accent, "Change pending: exit and relaunch the game.");
 	const char *session = std::getenv("RECOMP_SESSION_LOG");
-	const char *active = std::getenv("RECOMP_DIAG_LOG_LEVEL");
-	ImGui::TextDisabled("Current session: %s", session && *session == '1' ? "logging enabled" : "session logging disabled");
-	if (active && *active) ImGui::TextDisabled("Started with diagnostic level: %s", active);
-	ui::muted_wrapped("Verbose logging can cause frame stutter or choppy audio. Use it only for troubleshooting. Environment-variable overrides may take precedence over the saved setting.");
+	const char *sound = std::getenv("RECOMP_UC_SND_TRACE");
+	const char *ngs = std::getenv("RECOMP_NGS_DEBUG");
+	const char *hitch = std::getenv("RECOMP_HITCH_LOG");
+	const char *stall = std::getenv("RECOMP_STALL_PROF");
+	const bool recording = session && std::strcmp(session, "1") == 0;
+	const bool sound_on = sound && *sound && *sound != '0';
+	const int ngs_level = ngs ? std::atoi(ngs) : 0;
+	ImGui::TextDisabled("Active session file recording: %s", recording ? "On" : "Off");
+	ImGui::TextDisabled("Active Uncharted sound tracing: %s", sound_on ? "On" : "Off");
+	ImGui::TextDisabled("Active NGS tracing: %s", ngs_level > 0 ? (ngs_level >= 2 ? "Verbose" : "Basic") : "Off");
+	ImGui::TextDisabled("Active hitch threshold: %s ms", hitch && *hitch ? hitch : "0");
+	ImGui::TextDisabled("Active stall threshold: %s ms", stall && *stall ? stall : "0");
+	ui::muted_wrapped("Environment overrides may differ from your saved selection; the active values above show what was configured for this session.");
+	ui::muted_wrapped("Verbose logging can cause frame stutter or choppy audio. Use only for troubleshooting.");
 }
 static void page_game(void) {
 	prefs_load();
