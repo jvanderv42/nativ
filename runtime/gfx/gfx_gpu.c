@@ -5560,13 +5560,19 @@ void gfx_gpu_draw(const GfxDraw *d) {
 	 * can have wrong brightness and missing post effects. The option exists
 	 * ONLY in the v1.03 pack; normal gameplay always executes this draw.
 	 * This is diagnostic, not a halo correction. */
-	if (settings_game_option("uc_halo_isolation")) {
-		const int mode = settings_int("uc_halo_isolation", 0);
-		/* Captured frame_2177 draws 340-342 render late scene overlays to
-		 * 0x19d40000 with fprog 0x1fa0cec8; final composite still runs. */
-		if ((mode == 1 && d->fprog == 0x1fa0cec8u) ||
-		    (mode == 2 && d->fprog == 0x1fa3c1c8u))
-			return;
+	/* Fast path: avoid settings locks or option parsing on ordinary draws
+	 * (hundreds per frame). Only the two captured fragment programs are eligible. */
+	if (d->fprog == 0x1fa0cec8u || d->fprog == 0x1fa3c1c8u) {
+		static int available = -1;
+		if (available < 0) available = settings_game_option("uc_halo_isolation");
+		if (available) {
+			const int mode = settings_int("uc_halo_isolation", 0);
+			/* Captured frame_2177 draws 340-342 render late scene overlays
+			 * to 0x19d40000; the final composite still runs in mode 1. */
+			if ((mode == 1 && d->fprog == 0x1fa0cec8u) ||
+			    (mode == 2 && d->fprog == 0x1fa3c1c8u))
+				return;
+		}
 	}
 	/* SCE_GXM_PRIMITIVE_POINTS: point sprites, expanded to quads on the CPU by gfx_soft.c's
 	 * render_points_interp (the pipelines here are triangle lists; a few dozen sprites per prompt).
