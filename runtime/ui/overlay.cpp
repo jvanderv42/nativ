@@ -463,11 +463,11 @@ static void page_game(void) {
 		ImGui::PopID();
 	}
 	if (game_option("uc_menu_blur")) {
-		ui::row("Menu blur correction", "Uncharted: smooths the menu and pause-screen blur by removing narrow sharp bands. Enabled by default; does not change gameplay depth of field.");
+		ui::row("Menu/pause DOF correction", "Uncharted 1.00/1.03: applies the original depth-of-field correction to title and pause screens only. Enabled by default; normal gameplay depth of field is unchanged.");
 		uc_menu_blur_toggle();
 	}
 	if (game_option("uc_fire_loop_fix")) {
-		ui::row("Gunfire sound fix", "Uncharted: stops automatic gunfire that kept playing after the weapon stopped firing. Enabled by default; other sounds are not changed.");
+		ui::row("AK47 gunfire sound fix", "Uncharted: retries an early stop request when automatic gunfire remains active. Enabled by default for this experimental build; other sounds are not intentionally changed.");
 		uc_fire_loop_fix_toggle();
 	}
 	ui::row("Volume");
@@ -699,7 +699,7 @@ static void menu_game(void) {
 		const bool forced = override_value && *override_value;
 		bool enabled = forced ? std::atoi(override_value) != 0 : settings_int("uc_menu_blur", 1) != 0;
 		ImGui::BeginDisabled(forced);
-		if (ImGui::MenuItem("Menu blur correction", nullptr, &enabled)) {
+		if (ImGui::MenuItem("Menu/pause DOF correction", nullptr, &enabled)) {
 			settings_set_int("uc_menu_blur", enabled ? 1 : 0);
 			settings_save();
 		}
@@ -708,7 +708,7 @@ static void menu_game(void) {
 	if (game_option("uc_fire_loop_fix")) {
 		bool forced; bool enabled = uc_fire_loop_fix_state(&forced);
 		ImGui::BeginDisabled(forced);
-		if (ImGui::MenuItem("Gunfire sound fix", nullptr, &enabled)) {
+		if (ImGui::MenuItem("AK47 gunfire sound fix", nullptr, &enabled)) {
 			settings_set_int("uc_fire_loop_fix", enabled ? 1 : 0);
 			settings_save();
 		}
