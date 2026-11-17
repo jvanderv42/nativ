@@ -5553,6 +5553,17 @@ void gfx_gpu_draw(const GfxDraw *d) {
 	disp_note(DISP_DRAWS);
 	if (ao_scene) ao_note_draw(d);   /* the main scene's camera, for its ambient occlusion */
 	if (d->clip_mode == 0x40000000u) return;   /* SCE_GXM_REGION_CLIP_ALL: nothing drawn (gfx_soft.c's record_tri agrees); scene_first_draw untouched so the next real draw still clears if it's the scene's first */
+	/* v1.03 halo A/B investigation only. The captured gameplay draw with fragment
+	 * program 0x1fa3c1c8 composites the processed 0x19d40000 image back onto
+	 * the original world target 0x1a1c00c0 (frame_2177 draw 353). Bypassing
+	 * only this draw displays the scene before that final composite, which
+	 * can have wrong brightness and missing post effects. The option exists
+	 * ONLY in the v1.03 pack; normal gameplay always executes this draw.
+	 * This is diagnostic, not a halo correction. */
+	if (settings_game_option("uc_halo_isolation") &&
+	    settings_int("uc_halo_isolation", 0) == 1 &&
+	    d->fprog == 0x1fa3c1c8u)
+		return;
 	/* SCE_GXM_PRIMITIVE_POINTS: point sprites, expanded to quads on the CPU by gfx_soft.c's
 	 * render_points_interp (the pipelines here are triangle lists; a few dozen sprites per prompt).
 	 * Uncharted's swipe prompts draw this way into a widget-sized target (see gfx_soft.c) */
