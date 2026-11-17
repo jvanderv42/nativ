@@ -16,6 +16,8 @@ on:
     paths:
       - .github/workflows/build-windows-distribution.yml
       - runtime/ui/overlay.cpp
+      - runtime/audio/ngs.c
+      - pipeline/vitarecomp.py
       - runtime/ui/frame_rates.h
       - runtime/gfx/display.c
       - runtime/gfx/gfx.h
