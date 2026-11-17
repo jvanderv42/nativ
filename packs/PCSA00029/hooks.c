@@ -455,7 +455,7 @@ void recomp_hook_uc_pz_update(Cpu *c) {
 	overlay_toast_titled("Puzzle completed", 0, 2.0);
 }
 __attribute__((constructor)) static void uc_actions_register(void) {
-	game_action_add("Complete the open puzzle", "F3, or Back + R1 on a controller, at any time. Here it closes this menu and happens as the game goes on.", uc_pz_skip_request);
+	game_action_add_labeled("Complete the open puzzle", "F3, or Back + R1 on a controller, at any time. Here it closes this menu and happens as the game goes on.", "Complete Puzzle", uc_pz_skip_request);
 }
 /* Uncharted 1.03's debug menu (the community's rePatch "debug menu patch", 2022: one byte of the 1.03 main program,
  * movs r0, #1 -> #0 at 0x8110a2c8, the end of fn_8110a280): the same change without touching the program, when
