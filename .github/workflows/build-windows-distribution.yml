@@ -18,6 +18,8 @@ on:
       - runtime/ui/overlay.cpp
       - runtime/audio/ngs.c
       - pipeline/vitarecomp.py
+      - pipeline/diagnostics.py
+      - pipeline/tests/test_diagnostics.py
       - runtime/ui/frame_rates.h
       - runtime/gfx/display.c
       - runtime/gfx/gfx.h
@@ -39,6 +41,7 @@ on:
       - runtime/ui/aspect_factor.h
       - runtime/tests/aspect_factor_test.c
       - runtime/core/hooks.c
+      - runtime/core/hooks.h
       - runtime/tests/frame_rates_test.c
       - runtime/tests/frame_clock_test.c
       - runtime/tests/settings_save_test.c
@@ -89,6 +92,13 @@ jobs:
           python3 -m venv .venv
           .venv/bin/python -m pip install --upgrade pip
           .venv/bin/python -m pip install -r requirements.txt
+
+      - name: Check Diagnostics launch policy and log-file behavior
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s pipeline/tests -p 'test_diagnostics.py' -v
+          python3 -m py_compile pipeline/diagnostics.py pipeline/vitarecomp.py
 
       - name: Check Uncharted target scaling rules
         shell: bash
