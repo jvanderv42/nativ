@@ -603,8 +603,8 @@ def cmd_run(g, frames):
     # Environment overrides retain precedence over saved menu defaults.
     diag_env = launch_diagnostics(level, ENV)
     fixed = ([("RECOMP_SHADER_RECIPES_SHIPPED", shipped)] if os.path.isfile(shipped) else []) + ([("RECOMP_ICON", icon)] if os.path.isfile(icon) and sys.platform != "win32" else []) + [
-        ("RECOMP_TITLE", g.TITLE_ID), ("RECOMP_GAME_NAME", g.NAME), ("RECOMP_LOG", ENV.get("RECOMP_LOG") or "0")] +
-        list(diag_env.items())
+        ("RECOMP_TITLE", g.TITLE_ID), ("RECOMP_GAME_NAME", g.NAME), ("RECOMP_LOG", ENV.get("RECOMP_LOG") or "0")]
+    fixed.extend(diag_env.items())
     # ATIV_PRE_LAUNCH / ATIV_POST_EXIT (the environment): commands run before the game starts and after it exits. On a machine
     # whose GPU is shared (a local AI model kept in VRAM, say) the GPU must be free BEFORE the game starts: a game that starts
     # into full VRAM keeps its allocations in system memory for the whole session, even once the model is gone (an Uncharted
