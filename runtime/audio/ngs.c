@@ -25,6 +25,13 @@
 #endif
 #include "third_party/libatrac9/libatrac9.h"   /* MIT, vendored unmodified */
 
+/* Explicit numeric levels: RECOMP_NGS_DEBUG=0 must not activate verbose audio tracing. */
+static int ngs_debug_level(void) {
+	const char *value = getenv("RECOMP_NGS_DEBUG");
+	return value && *value ? atoi(value) : 0;
+}
+
+
 
 enum { DEF_MASTER = 1, DEF_SIMPLE, DEF_REVERB, DEF_OTHER, DEF_SCREAM, DEF_SCREAM_AT9, DEF_COMPRESSOR, DEF_SIDECHAIN };
 /* a bus that passes what reaches it through (no dynamics yet): the compressor, and the side-chain
@@ -434,7 +441,7 @@ static void h_voice_play(Cpu *c) {
 		memcpy(&st->last_freq, G(pp + (at9 ? A_FREQ : P_FREQ)), 4); memcpy(&st->last_scal, G(pp + (at9 ? A_SCALAR : P_SCALAR)), 4);
 		dump_log_line(v, "play", 0);
 	}
-	if (v && getenv("RECOMP_NGS_DEBUG")) {
+	if (v && ngs_debug_level() > 0) {
 		uint32_t pp = v->params[0];
 		fprintf(stderr, "    ngs: play voice %#x def %u params:", A0, v->def);
 		for (int i = 0; i < 24; i++) fprintf(stderr, " %08x", RD32(pp + 4 * i));
@@ -488,7 +495,7 @@ static void h_voice_module_cb(Cpu *c) {
 static void h_params_out_of_range(Cpu *c) { if (A2) WR8(A2, 0); RET(0); }
 static void h_voice_pause(Cpu *c) { Voice *v = voice_of(A0); if (v) v->paused = 1; RET(0); }
 static void h_voice_resume(Cpu *c) { Voice *v = voice_of(A0); if (v) v->paused = 0; RET(0); }
-static void h_voice_bypass(Cpu *c) { Voice *v = voice_of(A0); if (v && A1 < MAX_MODULES) v->bypass[A1] = A2; if (v && getenv("RECOMP_NGS_DEBUG")) fprintf(stderr, "    ngs: bypass voice %#x def %u module %u = %u\n", A0, v->def, A1, A2); RET(0); }
+static void h_voice_bypass(Cpu *c) { Voice *v = voice_of(A0); if (v && A1 < MAX_MODULES) v->bypass[A1] = A2; if (v && ngs_debug_level() > 0) fprintf(stderr, "    ngs: bypass voice %#x def %u module %u = %u\n", A0, v->def, A1, A2); RET(0); }
 /* (voice, SceNgsVoiceInfo*): state, modules, inputs, outputs, patches per output, and update calls active -- the system
  * updates the voice has played through since it started. Killzone's sound engine (fn 0x81759340) reads a streaming
  * voice's player state only once that count is non-zero, and queues its next chunk from it; the field was never
@@ -509,7 +516,7 @@ static void h_voice_lock(Cpu *c) {
 }
 static void h_voice_unlock(Cpu *c) {
 	Voice *v = voice_of(A0);
-	if (v && A1 < MAX_MODULES && !PLAYER_VOICE(v->def) && getenv("RECOMP_NGS_DEBUG") && getenv("RECOMP_NGS_DEBUG")[0] == '2') {   /* a bus's parameters, as set through Lock/Unlock */
+	if (v && A1 < MAX_MODULES && !PLAYER_VOICE(v->def) && ngs_debug_level() >= 2) {   /* a bus's parameters, as set through Lock/Unlock */
 		uint32_t p = v->params[A1]; fprintf(stderr, "    ngs: unlock voice %d def %u module %u id %#x:", VIDX(v), v->def, A1, RD32(p));
 		for (uint32_t k = 8; k < 48; k += 4) { float f; uint32_t w = RD32(p + k); memcpy(&f, &w, 4); fprintf(stderr, " %g/%#x", f, w); }
 		fprintf(stderr, "\n");
@@ -534,7 +541,7 @@ static void h_voice_unlock(Cpu *c) {
 static void h_voice_set_block(Cpu *c) {
 	Voice *v = voice_of(A0);
 	uint32_t at = A1, end = A1 + A2;
-	static int dbg = -1; if (dbg < 0) dbg = getenv("RECOMP_NGS_DEBUG") != 0;
+	static int dbg = -1; if (dbg < 0) dbg = ngs_debug_level() > 0;
 	if (dbg && v) fprintf(stderr, "    ngs: set params block voice %#x def %u: %u bytes at %#x\n", A0, v->def, A2, A1);
 	while (v && at + 16 <= end) {
 		int32_t module = (int32_t)RD32(at);
@@ -542,7 +549,7 @@ static void h_voice_set_block(Cpu *c) {
 		if (dbg) fprintf(stderr, "      entry at +%u: module %d chan %u id %#x size %u%s\n", at - A1, module, RD32(at + 4), RD32(at + 8), psize,
 		                 (module < 0 || module >= MAX_MODULES || psize < 8 || psize > PARAMS_SIZE || at + 8 + psize > end) ? "  -- REJECTED, block abandoned" : "");
 		if (module < 0 || module >= MAX_MODULES || psize < 8 || psize > PARAMS_SIZE || at + 8 + psize > end) break;
-		if (dbg && getenv("RECOMP_NGS_DEBUG")[0] == '2') {   /* =2: every block's words, as float and hex */
+		if (dbg && ngs_debug_level() >= 2) {   /* =2: every block's words, as float and hex */
 			fprintf(stderr, "      words:");
 			for (uint32_t k = 8; k < psize; k += 4) { float f; uint32_t w = RD32(at + 8 + k); memcpy(&f, &w, 4); fprintf(stderr, " %g/%#x", f, w); }
 			fprintf(stderr, "\n");
@@ -1128,7 +1135,7 @@ static void h_system_update(Cpu *c) {
 		}
 		if (!progressed) cycle = 1;   /* nothing could run: buses feed each other in a loop; the next round runs them all */
 	}
-	if (getenv("RECOMP_NGS_DEBUG")) {
+	if (ngs_debug_level() > 0) {
 		static uint64_t nu; if (nu++ % 300 == 0) {
 			for (int i = 0; i < nvoices; i++) {
 				Voice *v = &voices[i];
@@ -1167,7 +1174,7 @@ static void h_system_update(Cpu *c) {
 			Due *d = &now[k];
 			WR32(info, d->voice); WR32(info + 4, d->rack); WR32(info + 8, d->module); WR32(info + 12, d->reason);
 			WR32(info + 16, d->reason2); WR32(info + 20, d->ptr); WR32(info + 24, d->ud);
-			if (getenv("RECOMP_NGS_DEBUG")) fprintf(stderr, "    ngs: callback %#x voice %#x module %#x reason %u/%u\n", d->fn, d->voice, d->module, d->reason, d->reason2);
+			if (ngs_debug_level() > 0) fprintf(stderr, "    ngs: callback %#x voice %#x module %#x reason %u/%u\n", d->fn, d->voice, d->module, d->reason, d->reason2);
 			/* (RECOMP_NGS_VO_LOG: a dialogue voice's END and finished callbacks as delivered -- Killzone's doubled lines, 2026-10-25:
 			 * after a healthy line's end the engine polls the voice in that same update; before a doubled one it never polls and
 			 * plays the line again 0.7 s later. Was the callback delivered, and when?) */
