@@ -92,6 +92,7 @@ RECOMPILER, RUNTIME, PACKS, DECRYPT, DEV = (os.path.join(ROOT, d) for d in ("rec
 sys.path.insert(0, R)
 import packconf  # noqa: E402
 from datadir import library_dir  # noqa: E402
+from diagnostics import diagnostic_level, launch_diagnostics, run_session  # noqa: E402
 from winfs import remove_file, remove_tree  # noqa: E402
 
 WINDOWS = os.name == "nt"
@@ -586,33 +587,6 @@ def tee_run(argv, env, cwd, log_path):
     return rc
 
 
-def diagnostic_level(g):
-    """Read the shared setting saved by the in-game Diagnostics page at launch time.
-
-    A per-game setting is also accepted for compatibility with manually edited
-    settings.ini files. Explicit RECOMP_SESSION_LOG remains a process override.
-    """
-    from datadir import prefs_dir
-
-    def read_level(path):
-        try:
-            with open(path, encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line or line.startswith(("#", ";")) or "=" not in line:
-                        continue
-                    key, value = line.split("=", 1)
-                    if key.strip() == "diag_log_level":
-                        return max(0, min(3, int(value.strip())))
-        except (OSError, ValueError):
-            pass
-        return None
-
-    own = read_level(os.path.join(g.OUT, "settings.ini"))
-    shared = read_level(os.path.join(prefs_dir(), "settings.ini"))
-    return own if own is not None else shared if shared is not None else 0
-
-
 def cmd_run(g, frames):
     OUT = g.OUT
     os.makedirs(os.path.join(OUT, "captures"), exist_ok=True)   # F12 in the window saves captures here
@@ -624,16 +598,13 @@ def cmd_run(g, frames):
     # RECOMP_SHADER_RECIPES_SHIPPED: packs/<title>/shaders.txt, the shader recipes that ship (gfx_gpu.c: built as the game registers each program)
     shipped = os.path.join(PACKS, g.PACK, "shaders.txt")
     icon = os.path.join(ROOT, "assets", "brand", "png", "icon-" + ("macos-512" if sys.platform == "darwin" else "256") + ".png")   # (the window's: window.c)
-    level = diagnostic_level(g)
-    # The explicit environment override takes precedence over the menu setting.
-    session_logging = ENV.get("RECOMP_SESSION_LOG", "1" if level > 0 else "0") == "1"
+    from datadir import prefs_dir
+    level = diagnostic_level(os.path.join(OUT, "settings.ini"), os.path.join(prefs_dir(), "settings.ini"))
+    # Environment overrides retain precedence over saved menu defaults.
+    diag_env = launch_diagnostics(level, ENV)
     fixed = ([("RECOMP_SHADER_RECIPES_SHIPPED", shipped)] if os.path.isfile(shipped) else []) + ([("RECOMP_ICON", icon)] if os.path.isfile(icon) and sys.platform != "win32" else []) + [
-        ("RECOMP_TITLE", g.TITLE_ID), ("RECOMP_GAME_NAME", g.NAME), ("RECOMP_LOG", ENV.get("RECOMP_LOG") or "0"),
-        ("RECOMP_SESSION_LOG", "1" if session_logging else "0"), ("RECOMP_DIAG_LOG_LEVEL", str(level)),
-        ("RECOMP_HITCH_LOG", ENV.get("RECOMP_HITCH_LOG") or ("50" if session_logging else "0")),
-        ("RECOMP_STALL_PROF", ENV.get("RECOMP_STALL_PROF") or ("150" if session_logging else "0")),
-        ("RECOMP_UC_SND_TRACE", ENV.get("RECOMP_UC_SND_TRACE") or ("1" if level >= 2 and session_logging else "0")),
-        ("RECOMP_NGS_DEBUG", ENV.get("RECOMP_NGS_DEBUG") or ("2" if level >= 3 and session_logging else "0"))]
+        ("RECOMP_TITLE", g.TITLE_ID), ("RECOMP_GAME_NAME", g.NAME), ("RECOMP_LOG", ENV.get("RECOMP_LOG") or "0")] +
+        list(diag_env.items())
     # ATIV_PRE_LAUNCH / ATIV_POST_EXIT (the environment): commands run before the game starts and after it exits. On a machine
     # whose GPU is shared (a local AI model kept in VRAM, say) the GPU must be free BEFORE the game starts: a game that starts
     # into full VRAM keeps its allocations in system memory for the whole session, even once the model is gone (an Uncharted
@@ -644,16 +615,7 @@ def cmd_run(g, frames):
     try:
         e = game_env(g, g.RUN_ENV.split() + (ENV.get("EXTRA_ENV") or "").split(), fixed)
         argv = g.exe_argv(os.path.join(OUT, g.EXE)) + [g.BASE + ".img", g.entry(), frames or "100000000000"]
-        if session_logging:
-            if os.path.isfile(os.path.join(OUT, "session.log")):
-                os.replace(os.path.join(OUT, "session.log"), os.path.join(OUT, "session.prev.log"))
-            rc = tee_run(argv, e, OUT, os.path.join(OUT, "session.log"))
-        else:
-            # Do not create log files or continuously write verbose diagnostics to a terminal.
-            # The normal game crash handler remains active; enable logging for investigations.
-            p = start_game(argv, env=e, cwd=OUT, stderr=subprocess.DEVNULL)
-            try: rc = p.wait()
-            except KeyboardInterrupt: p.terminate(); rc = p.wait()
+        rc = run_session(argv, e, OUT, start_game, tee_run)
     finally:
         if ENV.get("ATIV_POST_EXIT"): subprocess.run(ENV["ATIV_POST_EXIT"], shell=True)
     sys.exit(rc)
