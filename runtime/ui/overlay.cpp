@@ -481,7 +481,7 @@ static void page_game(void) {
 		const GameAction &action = hook_game_actions[i];
 		ui::row(action.name, action.about ? action.about : "");
 		ImGui::PushID(i);
-		if (ImGui::Button("Do it")) { game_action_run(i); overlay_close(); }
+		if (ImGui::Button("Complete Puzzle")) { game_action_run(i); overlay_close(); }
 		ImGui::PopID();
 	}
 	if (game_option("uc_menu_blur")) {
@@ -489,7 +489,7 @@ static void page_game(void) {
 		uc_menu_blur_toggle();
 	}
 	if (game_option("uc_fire_loop_fix")) {
-		ui::row("AK47 gunfire sound fix", "Uncharted: retries an early stop request when automatic gunfire remains active. Enabled by default for this experimental build; other sounds are not intentionally changed.");
+		ui::row("Automatic gunfire sound fix", "Uncharted: retries an early stop request when automatic gunfire remains active. Verified with the AK47; other automatic weapons have not yet been tested.");
 		uc_fire_loop_fix_toggle();
 	}
 	ui::row("Volume");
@@ -730,7 +730,7 @@ static void menu_game(void) {
 	if (game_option("uc_fire_loop_fix")) {
 		bool forced; bool enabled = uc_fire_loop_fix_state(&forced);
 		ImGui::BeginDisabled(forced);
-		if (ImGui::MenuItem("AK47 gunfire sound fix", nullptr, &enabled)) {
+		if (ImGui::MenuItem("Automatic gunfire sound fix", nullptr, &enabled)) {
 			settings_set_int("uc_fire_loop_fix", enabled ? 1 : 0);
 			settings_save();
 		}
