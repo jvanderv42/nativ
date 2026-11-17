@@ -28,10 +28,11 @@ extern void (*hook_stall_long)(uint64_t stall_us);
 
 /* Game-specific convenience actions; first action also bound to F3 / Back + R1. */
 #define GAME_ACTIONS_MAX 4
-typedef struct { const char *name, *about; void (*fn)(void); } GameAction;
+typedef struct { const char *name, *about, *button_label; void (*fn)(void); } GameAction;
 extern GameAction hook_game_actions[GAME_ACTIONS_MAX];
 extern int hook_game_actions_n;
 void game_action_add(const char *name, const char *about, void (*fn)(void));
+void game_action_add_labeled(const char *name, const char *about, const char *button_label, void (*fn)(void));
 
 static inline float rdf(uint32_t a) { float f; memcpy(&f, G(a), 4); return f; }   /* a guest float */
 static inline void wrf(uint32_t a, float f) { memcpy(G(a), &f, 4); }
