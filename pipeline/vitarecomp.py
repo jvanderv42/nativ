@@ -599,7 +599,8 @@ def cmd_run(g, frames):
     icon = os.path.join(ROOT, "assets", "brand", "png", "icon-" + ("macos-512" if sys.platform == "darwin" else "256") + ".png")   # (the window's: window.c)
     fixed = ([("RECOMP_SHADER_RECIPES_SHIPPED", shipped)] if os.path.isfile(shipped) else []) + ([("RECOMP_ICON", icon)] if os.path.isfile(icon) and sys.platform != "win32" else []) + [
         ("RECOMP_TITLE", g.TITLE_ID), ("RECOMP_GAME_NAME", g.NAME), ("RECOMP_LOG", ENV.get("RECOMP_LOG") or "0"),
-        ("RECOMP_HITCH_LOG", ENV.get("RECOMP_HITCH_LOG") or "50"), ("RECOMP_STALL_PROF", ENV.get("RECOMP_STALL_PROF") or "150")]
+        ("RECOMP_HITCH_LOG", ENV.get("RECOMP_HITCH_LOG") or ("50" if ENV.get("RECOMP_SESSION_LOG") == "1" else "0")),
+        ("RECOMP_STALL_PROF", ENV.get("RECOMP_STALL_PROF") or ("150" if ENV.get("RECOMP_SESSION_LOG") == "1" else "0"))]
     # ATIV_PRE_LAUNCH / ATIV_POST_EXIT (the environment): commands run before the game starts and after it exits. On a machine
     # whose GPU is shared (a local AI model kept in VRAM, say) the GPU must be free BEFORE the game starts: a game that starts
     # into full VRAM keeps its allocations in system memory for the whole session, even once the model is gone (an Uncharted
