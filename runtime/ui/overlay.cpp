@@ -76,7 +76,7 @@ int window_raw_look(void); void window_set_raw_look(int on);
 int window_controls_count(void);
 int window_gyro_present(void);
 /* Per-game actions registered by its hooks; e.g., complete an open Uncharted puzzle. */
-typedef struct { const char *name, *about; void (*fn)(void); } GameAction;
+typedef struct { const char *name, *about, *button_label; void (*fn)(void); } GameAction;
 extern GameAction hook_game_actions[]; extern int hook_game_actions_n;
 void game_action_run(int index);
 void motion_recenter(void);
@@ -481,7 +481,7 @@ static void page_game(void) {
 		const GameAction &action = hook_game_actions[i];
 		ui::row(action.name, action.about ? action.about : "");
 		ImGui::PushID(i);
-		if (ImGui::Button("Complete Puzzle")) { game_action_run(i); overlay_close(); }
+		if (ImGui::Button(action.button_label ? action.button_label : "Run action")) { game_action_run(i); overlay_close(); }
 		ImGui::PopID();
 	}
 	if (game_option("uc_menu_blur")) {
