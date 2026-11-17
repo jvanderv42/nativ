@@ -57,19 +57,17 @@ diagnostic in the current build.
 ## Consolidated experimental v1.03 diagnostic — one build
 
 The 1.03-only F10 → Game option **Character halo investigation** defaults to
-**Normal** and offers **Before final composite**. Its sole action is bypassing
-fragment program `0x1fa3c1c8`, which VFC frame_2177 draw 353 records sampling
-processed target `0x19d40000` and writing to the original world target
-`0x1a1c00c0`. No guest shader/program bytes, audio, physics or v1.00 code
-paths are modified.
+**Normal** and offers two diagnostic modes in addition to **Normal**:
+- **Skip late overlays**: omits captured fragment program `0x1fa0cec8` (frame_2177 draws 340–342), which normally writes into intermediate target `0x19d40000`; the final composite remains active. Look for a change in the silhouette or scene effects.
+- **Before final composite**: omits fragment program `0x1fa3c1c8` (frame_2177 draw 353), which normally samples processed target `0x19d40000` and writes to the original scene target `0x1a1c00c0`. This bypass may display incorrect colors or incomplete imagery because that final pass also changes target interpretation.
+
+No guest shader/program bytes, audio, physics or v1.00 paths are modified.
 
 - Expect the bypass image to look unusually bright, dark, tonally incorrect,
   or to omit other effects. This is **not** a visual-quality mode.
 - At the same camera location where the halo appears, compare Drake's **edge
-  shape**, not overall brightness, between Normal and Before final composite.
-- If the edge is present in both, focus on primary character/world shaders,
-  lighting or earlier depth-dependent passes. If only Normal has the edge,
-  the final composite or its intermediate inputs merit focused investigation.
+  shape**, not overall brightness, between Normal, Skip late overlays, and Before final composite.
+- If Skip late overlays changes the edge, investigate those overlay shaders and their inputs. If only Before final composite changes the edge, investigate the final composite and upstream targets. If none changes it, prioritize main-scene character lighting, shader translation, and earlier depth processing. The before-final view may be too visually degraded to judge; do not infer a result from unusable imagery.
 - Additionally compare FXAA Off vs FXAA On using the existing Display menu
   (no rebuild needed). Do not change resolution/camera between comparisons.
 - Restore **Normal** after the A/B comparison. Do not keep the bypass enabled
