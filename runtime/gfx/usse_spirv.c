@@ -1257,7 +1257,7 @@ static void trace_repeated_ldst_origin(const UsseProgram *prog, const UOp *code,
 			int sa = ldst_repeated_i32mad_sa(code, j, op->s0.bank, op->s0.num);
 			if (sa >= 0) {
 				if (__atomic_fetch_add(&reports, 1u, __ATOMIC_RELAXED) < 32u)
-					fprintf(stderr, "    uc103 ldst: repeated-origin shader=%#x instruction=%d writer=%d base=%u.%u SA=%d\\n",
+					fprintf(stderr, "    uc103 ldst: repeated-origin shader=%#x instruction=%d writer=%d base=%u.%u SA=%d\n",
 					        usse_program_hash(prog), i, j, op->s0.bank, op->s0.num, sa);
 				break;
 			}
