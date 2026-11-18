@@ -4593,7 +4593,7 @@ static uint8_t *gfx_check_stencil_coverage(const GfxDraw *d, TargetEntry *e) {
             SDL_GPURenderPass *rp = SDL_BeginGPURenderPass(cmd, &ct, 1, &dt);
             if (rp) {
                 SDL_GPUViewport vp = { 0, 0, (float)e->width, (float)e->height, 0, 1 };
-                SDL_GPURect sc = { 0, 0, e->width, e->height };
+                SDL_Rect sc = { 0, 0, (int)e->width, (int)e->height };
                 SDL_BindGPUGraphicsPipeline(rp, pipe);
                 SDL_SetGPUViewport(rp, &vp); SDL_SetGPUScissor(rp, &sc);
                 SDL_SetGPUStencilReference(rp, d->stencil_ref);
