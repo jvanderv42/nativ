@@ -36,3 +36,28 @@ No renderer output is intentionally altered by this diagnostic code when the fea
 
 ## Validation state
 Source inspection completed; Windows compilation and GPU behavior depend on GitHub Actions build #86 and a subsequent on-device test. No claim of full depth/stencil parity is made.
+
+## November 18 follow-up: on-demand capture
+
+The earlier eight-draw shader filter ran during startup, before Drake reached the actual halo location. The new opt-in **manual trigger** addresses that without slowing ordinary navigation:
+
+- Set `RECOMP_GFX_CHECK_TRIGGER=1` in addition to the three environment variables above, before starting the game.
+- Navigate to the lighting/angle where the halo is clearly visible, then press **F11** once.
+- Only after F11, Nativ checks the next eight eligible draws matching `RECOMP_GFX_CHECK_FPROG`. This is a **one-shot diagnostic**: subsequent presses do not reset the budget, and restarting the program is necessary for a new capture.
+- `F11` is inert with respect to this feature unless the explicit trigger environment variable is present.
+- The log prints `F11 armed shader-specific comparison`, `selected first draw`, and `completed eight comparisons`. Diagnostic PPMs are written only for the **first differing draw**; if there are no differences, no images are expected.
+- File output remains relative to the process **working directory**.
+- **Important:** neither this trigger nor the prior patch synchronizes the interpreter's accumulated GPU stencil/depth state. For draw `0x1fa2e708` (stencil_func 5), the comparison remains **inconclusive as evidence of a shader translation fault**.
+
+Example PowerShell (run from the *diagnostic distribution directory*):
+
+```powershell
+$env:RECOMP_GFX_CHECK = 'rgb'
+$env:RECOMP_GFX_CHECK_FPROG = '1fa2e708'
+$env:RECOMP_GFX_CHECK_TRIGGER = '1'
+$env:RECOMP_SESSION_LOG = '1'
+& '.\Project Nativ.exe'
+Remove-Item Env:RECOMP_GFX_CHECK, Env:RECOMP_GFX_CHECK_FPROG, Env:RECOMP_GFX_CHECK_TRIGGER, Env:RECOMP_SESSION_LOG -ErrorAction SilentlyContinue
+```
+
+The PowerShell session must remain in the distribution directory, or else the PPM files will be emitted into the actual working directory used at launch. Do not reuse older PPM files when reviewing a new comparison.
