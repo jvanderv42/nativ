@@ -4485,11 +4485,29 @@ static long gfx_check_fprog(void) {
     return addr;
 }
 static unsigned gfx_check_count;
+/* F11 arms the diagnostic while the game is running. With the opt-in trigger
+ * mode, no GPU downloads or software comparisons occur before F11 is pressed.
+ * SDL input and GPU rendering run on different threads, so exchange the flag
+ * atomically. The sample budget remains one-shot to preserve the first images. */
+static int gfx_check_armed;
+void gfx_gpu_check_trigger(void) {
+    if (!gfx_check_on() || !getenv("RECOMP_GFX_CHECK_TRIGGER")) return;
+    if (__atomic_load_n(&gfx_check_count, __ATOMIC_RELAXED) >= 8) {
+        fprintf(stderr, "RECOMP_GFX_CHECK: F11 ignored; eight comparisons already completed (restart to re-arm)\n");
+        return;
+    }
+    __atomic_store_n(&gfx_check_armed, 1, __ATOMIC_RELEASE);
+    fprintf(stderr, "RECOMP_GFX_CHECK: F11 armed shader-specific comparison (fprog=%#lx, up to eight draws)\n", gfx_check_fprog());
+}
 static int gfx_check_selected(const GfxDraw *d) {
-    if (!gfx_check_on() || gfx_check_count >= 8) return 0;
+    if (!gfx_check_on()) return 0;
+    if (getenv("RECOMP_GFX_CHECK_TRIGGER") && !__atomic_load_n(&gfx_check_armed, __ATOMIC_ACQUIRE)) return 0;
+    if (gfx_check_count >= 8) return 0;
     long addr = gfx_check_fprog();
     if (addr >= 0 && (uint32_t)addr != d->fprog) return 0;
     ++gfx_check_count;
+    if (gfx_check_count == 1) fprintf(stderr, "RECOMP_GFX_CHECK: selected first draw of program %#x\n", d->fprog);
+    if (gfx_check_count == 8) fprintf(stderr, "RECOMP_GFX_CHECK: completed eight comparisons; no further draws will be checked\n");
     return 1;
 }
 static int gfx_check_write_ppm(const char *path, uint32_t w, uint32_t h, const uint8_t *rgba) {
