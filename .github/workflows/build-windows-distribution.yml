@@ -74,7 +74,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            zsh rsync unzip zip xz-utils ca-certificates file make \
+            zsh rsync unzip zip xz-utils ca-certificates file make glslc \
             python3-venv python3-pip
 
       # Nativ imports tomllib, which requires Python 3.11 or later.
@@ -92,6 +92,16 @@ jobs:
           python3 -m venv .venv
           .venv/bin/python -m pip install --upgrade pip
           .venv/bin/python -m pip install -r requirements.txt
+
+      # The stencil-coverage diagnostic adds one built-in Vulkan shader. Generate
+      # its SPIR-V twin from the committed GLSL before the Windows cross-build.
+      # The normal repository header remains untouched outside this job.
+      - name: Generate Vulkan diagnostic shaders
+        shell: bash
+        run: |
+          set -euo pipefail
+          zsh runtime/gfx/shaders/build.sh
+          grep -q 'vk_stencil_mask_frag' runtime/gfx/vk_shaders.h
 
       - name: Check Diagnostics launch policy and log-file behavior
         shell: bash
