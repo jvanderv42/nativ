@@ -195,6 +195,21 @@ jobs:
           test -f "$ATIV_WIN_TOOLCHAIN/zlib/lib/libz.a"
           test -f "$ATIV_WIN_TOOLCHAIN/ffmpeg/lib/libavcodec.a"
 
+      - name: Compile-check GPU diagnostic source with Windows toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          export ATIV_WIN_TOOLCHAIN="$RUNNER_TEMP/ativ-win"
+          "$ATIV_WIN_TOOLCHAIN/llvm-mingw/bin/x86_64-w64-mingw32-clang" \
+            -std=gnu11 -D_THREAD_SAFE -D_FILE_OFFSET_BITS=64 \
+            -include runtime/platform/win32_compat.h \
+            -Iruntime/core -Iruntime/gfx -Iruntime/audio -Iruntime/media \
+            -Iruntime/input -Iruntime/net -Iruntime/ui -Iruntime/platform \
+            -Iruntime/debug -Irecompiler -I. \
+            -I"$ATIV_WIN_TOOLCHAIN/SDL3/x86_64-w64-mingw32/include" \
+            -I"$ATIV_WIN_TOOLCHAIN/zlib/include" \
+            -fsyntax-only runtime/gfx/gfx_gpu.c
+
       - name: Assemble complete Windows installation
         shell: bash
         run: |
