@@ -100,6 +100,29 @@ jobs:
           python3 -m unittest discover -s pipeline/tests -p 'test_diagnostics.py' -v
           python3 -m py_compile pipeline/diagnostics.py pipeline/vitarecomp.py
 
+      - name: Check Uncharted version-specific halo controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import tomllib
+          from pathlib import Path
+
+          pack = tomllib.loads(Path("packs/PCSA00029/pack.toml").read_text(encoding="utf-8"))
+          versions = pack["versions"]
+          def options(version):
+              env = versions[version].get("RUN_ENV", pack.get("RUN_ENV", ""))
+              return next((x.split("=", 1)[1].split(",") for x in env.split()
+                           if x.startswith("RECOMP_GAME_OPTIONS=")), [])
+
+          assert "uc_halo_isolation" not in options("1.00"), "1.00 must not show 1.03 halo diagnostics"
+          assert "uc_halo_isolation" in options("1.03"), "1.03 must expose halo diagnostics"
+          for version in ("1.00", "1.03"):
+              for option in ("uc_menu_blur", "uc_fire_loop_fix"):
+                  assert option in options(version), (version, option)
+          print("Verified v1.03-only halo menu and both version's DOF/gunfire options")
+          PY
+
       - name: Check Uncharted target scaling rules
         shell: bash
         run: |
