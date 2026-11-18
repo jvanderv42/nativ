@@ -77,3 +77,18 @@ No guest shader/program bytes, audio, physics or v1.00 paths are modified.
 
 The investigation is isolated to the experimental branch. Do not merge the
 bypass into the main release without a decision to remove or hide it.
+
+
+## Character material audit — 2026-11-17 (after eight screenshots)
+
+Read-only VFC analysis identifies the actual outfit texture, not just a generic character-shaped render target:
+
+- `frame_2977.vfc` primary scene draws **249–251** and `frame_5428.vfc` draws **266–268** use vertex program `0x230d5288`, fragment program **`0x1fa44f08`**, seven vertex attributes and 2,874/4,800/2,964 indices. The first two draws sample PVRTC-II 512×1024 textures at **`0x1c076060`** (outfit diffuse, visually identified from a read-only texture block-endpoint preview of Drake's shirt and straps) and `0x1c0d0060` (blue normal-map-like texture).
+- Additional draws `frame_2977` **263–264** and `frame_5428` **282–283** reuse those clothing textures but use vertex program **`0x230a7b48`** / fragment program **`0x1fa1d988`**. This vertex program is among the five v1.03 LDST translator cases. Primary outfit vertex program `0x230d5288` is *not* one of those five, so do not blame the whole body halo on LDST without further evidence.
+- Another mesh with 3,084 indices appears at main scene draw 317 and another later pass draw 383 (`frame_2977`). The draws reuse exactly the same index buffer `0x23e79960` and vertex streams `0x23e7b180` and `0x23e755a0` with vertex programs `0x230a6b08` / `0x230907c8` respectively. Both are LDST cases, but that mesh has **not** been identified as Drake.
+- Nativ's PVRTC-II decoder has a documented missing hard-block mode-1 path. The captured outfit materials **do not contain any hard-transition mode-1 blocks** (0% among the sampled textures), so that specific decoder omission is unlikely to explain the observed bright silhouette.
+- Across the eight user screenshots the halo survives both resolutions and the `0x1fa0cec8` late-overlay bypass. Final-composite bypass yields unusable multicolored output; it is not evidence of a correction. FXAA softens edges but does not eliminate the bright highlights.
+
+**Next engineering target:** Compare original-vs-translated character fragment shader `0x1fa44f08` and its normal/diffuse inputs, using a GPU replay at main-scene draws 249–251 and 263–264. Only patch if a concrete discrepancy is found. Preserve v1.00 behavior and the known-good DOF/audio fixes. The older halo bypass diagnostics must **not** be merged into main.
+
+A human-visible PVRTC block-endpoint preview was used only to identify the outfit material; it is not a faithful shader render or a GPU replay. No new renderer fix or gameplay validation is claimed.
