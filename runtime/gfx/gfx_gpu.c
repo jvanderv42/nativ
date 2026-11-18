@@ -4519,6 +4519,98 @@ static int gfx_check_write_ppm(const char *path, uint32_t w, uint32_t h, const u
     fprintf(stderr, "RECOMP_GFX_CHECK: %s %s\n", ok ? "saved" : "failed writing", path);
     return ok;
 }
+/* Diagnostic-only stencil coverage: run a white fullscreen fragment through
+ * the GPU's *existing* stencil surface with the selected draw's stencil compare.
+ * The test is read-only (KEEP operations, write mask 0), and reads the resulting
+ * RGBA8 colour surface, not the Vulkan depth/stencil texture itself. This is
+ * valid only for depth-ALWAYS, depth-write-off draws which leave stencil intact.
+ * For any other state return NULL: never manufacture a reference mask. */
+static uint8_t *gfx_check_stencil_coverage(const GfxDraw *d, TargetEntry *e) {
+    DepthEntry *ds = scene_depth_entry;
+    if (!ds || !ds->tex || d->depth_func != 7 || d->depth_write ||
+        (d->stencil_wmask && (d->stencil_fail || d->depth_fail || d->depth_pass)) ||
+        ds->w != e->width || ds->h != e->height || TSCALED(ds) || TSCALED(e)) {
+        fprintf(stderr, "RECOMP_GFX_CHECK: stencil coverage unavailable (requires 1x, identical surface dimensions, depth ALWAYS/no-write and stencil KEEP)\n");
+        return NULL;
+    }
+    static const char *mask_msl =
+        "#include <metal_stdlib>\nusing namespace metal;\n"
+        "fragment float4 main0_stencil_mask() { return float4(1.0); }\n";
+    SDL_GPUShader *vs = builtin_shader(preload_msl, "main0", vk_fullscreen_vert,
+                                      sizeof vk_fullscreen_vert, SDL_GPU_SHADERSTAGE_VERTEX, 0, 0);
+    SDL_GPUShader *fs = builtin_shader(mask_msl, "main0_stencil_mask", vk_stencil_mask_frag,
+                                      sizeof vk_stencil_mask_frag, SDL_GPU_SHADERSTAGE_FRAGMENT, 0, 0);
+    if (!vs || !fs) {
+        fprintf(stderr, "RECOMP_GFX_CHECK: stencil mask shader unavailable: %s\n", SDL_GetError());
+        if (vs) SDL_ReleaseGPUShader(gpu(), vs);
+        if (fs) SDL_ReleaseGPUShader(gpu(), fs);
+        return NULL;
+    }
+    SDL_GPUTextureCreateInfo tci = {
+        .type = SDL_GPU_TEXTURETYPE_2D, .format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+        .usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER,
+        .width = e->width, .height = e->height,
+        .layer_count_or_depth = 1, .num_levels = 1, .sample_count = SDL_GPU_SAMPLECOUNT_1
+    };
+    SDL_GPUTexture *mask = SDL_CreateGPUTexture(gpu(), &tci);
+    SDL_GPUColorTargetDescription color_desc = { .format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM };
+    SDL_GPUStencilOpState keep = {
+        SDL_GPU_STENCILOP_KEEP, SDL_GPU_STENCILOP_KEEP,
+        SDL_GPU_STENCILOP_KEEP, conv_cmp(d->stencil_func)
+    };
+    SDL_GPUGraphicsPipelineCreateInfo pi = {0};
+    pi.vertex_shader = vs; pi.fragment_shader = fs;
+    pi.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+    pi.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
+    pi.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
+    pi.rasterizer_state.front_face = SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
+    pi.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
+    pi.depth_stencil_state.enable_stencil_test = true;
+    pi.depth_stencil_state.front_stencil_state = keep;
+    pi.depth_stencil_state.back_stencil_state = keep;
+    pi.depth_stencil_state.compare_mask = d->stencil_cmask;
+    pi.depth_stencil_state.write_mask = 0;
+    pi.target_info.num_color_targets = 1;
+    pi.target_info.color_target_descriptions = &color_desc;
+    pi.target_info.has_depth_stencil_target = true;
+    pi.target_info.depth_stencil_format = depth_format();
+    SDL_GPUGraphicsPipeline *pipe = mask ? SDL_CreateGPUGraphicsPipeline(gpu(), &pi) : NULL;
+    uint8_t *result = NULL;
+    if (pipe) {
+        SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(gpu());
+        if (cmd) {
+            SDL_GPUColorTargetInfo ct = {
+                .texture = mask, .load_op = SDL_GPU_LOADOP_CLEAR,
+                .clear_color = (SDL_FColor){0, 0, 0, 0},
+                .store_op = SDL_GPU_STOREOP_STORE
+            };
+            SDL_GPUDepthStencilTargetInfo dt = {
+                .texture = ds->tex, .load_op = SDL_GPU_LOADOP_LOAD,
+                .store_op = SDL_GPU_STOREOP_STORE,
+                .stencil_load_op = SDL_GPU_LOADOP_LOAD,
+                .stencil_store_op = SDL_GPU_STOREOP_STORE
+            };
+            SDL_GPURenderPass *rp = SDL_BeginGPURenderPass(cmd, &ct, 1, &dt);
+            if (rp) {
+                SDL_GPUViewport vp = { 0, 0, (float)e->width, (float)e->height, 0, 1 };
+                SDL_GPURect sc = { 0, 0, e->width, e->height };
+                SDL_BindGPUGraphicsPipeline(rp, pipe);
+                SDL_SetGPUViewport(rp, &vp); SDL_SetGPUScissor(rp, &sc);
+                SDL_SetGPUStencilReference(rp, d->stencil_ref);
+                SDL_DrawGPUPrimitives(rp, 3, 1, 0, 0);
+                SDL_EndGPURenderPass(rp);
+            }
+            SDL_SubmitGPUCommandBuffer(cmd);
+            if (rp) result = mv_download(mask, e->width, e->height, 4);
+        }
+    }
+    if (!result) fprintf(stderr, "RECOMP_GFX_CHECK: stencil mask capture failed: %s\n", SDL_GetError());
+    if (pipe) SDL_ReleaseGPUGraphicsPipeline(gpu(), pipe);
+    if (mask) SDL_ReleaseGPUTexture(gpu(), mask);
+    SDL_ReleaseGPUShader(gpu(), vs);
+    SDL_ReleaseGPUShader(gpu(), fs);
+    return result;
+}
 static int gfx_check_reported, full_reported;
 /* RECOMP_GFX_CHECK=rgb: ignore alpha (a target that is only ever presented never shows it, and an
  * alpha-only difference in a clear otherwise stops the check before any visible divergence) */
@@ -4535,6 +4627,18 @@ static void gfx_check_draw(const GfxDraw *d, TargetEntry *e, int has_depth, cons
 	for (int u = 0; u < 16; u++) if (d->tex[u].data) for (int ti = 0; ti < ntargets; ti++)
 		if (targets[ti].addr == d->tex[u].data && &targets[ti] != e) target_sync_for_cpu(&targets[ti]);
 	GfxTarget gt = target_entry_as_gfx(e); gt.depth = has_depth;
+    /* The GPU stencil plane is inaccessible to the software renderer as guest
+     * memory when it was updated on-device. For the tested depth-ALWAYS lighting
+     * pass, capture exact GPU stencil *coverage*, disable the software stencil
+     * test, and restore untouched pixels from the pre-draw target. */
+    uint8_t *coverage = has_depth ? gfx_check_stencil_coverage(d, e) : NULL;
+    uint8_t *pre_rgba = NULL;
+    if (coverage) {
+        gt.depth = 0; /* safe only because the coverage helper checked depth ALWAYS */
+        pre_rgba = malloc(n4);
+        if (pre_rgba) gfx_decode_target_rgba8(&gt, pre_rgba);
+        else { free(coverage); coverage = NULL; gt.depth = has_depth; }
+    }
 	/* gfx_soft_draw's render() reads file-scope scene state (the colour target, the depth/stencil
 	 * buffer) that only gfx_soft_begin_scene sets up -- in RECOMP_GFX=gpu that call never otherwise
 	 * happens, so without this the "software reference" draw was a silent no-op (record_tri bails
@@ -4548,6 +4652,15 @@ static void gfx_check_draw(const GfxDraw *d, TargetEntry *e, int has_depth, cons
 	gfx_soft_end_scene();                       /* the software path only records triangles at draw time; its flush rasterises them */
 	uint8_t *soft_rgba = malloc(n4);
 	gfx_decode_target_rgba8(&gt, soft_rgba);
+    if (coverage) {
+        uint32_t permitted = 0;
+        for (uint32_t k = 0; k < e->width * e->height; k++) {
+            if (coverage[4 * k] >= 128) permitted++;
+            else memcpy(soft_rgba + 4 * k, pre_rgba + 4 * k, 4);
+        }
+        fprintf(stderr, "RECOMP_GFX_CHECK: GPU stencil coverage %u/%u pixels; software output masked using actual GPU stencil compare (ref=%u mask=%u func=%u)\n",
+                permitted, e->width * e->height, d->stencil_ref, d->stencil_cmask, d->stencil_func);
+    }
 	memcpy(G(e->addr), post_raw, pre_bytes);   /* restore: the GPU path stays authoritative for the real run */
 	free(post_raw);
 
@@ -4576,7 +4689,7 @@ static void gfx_check_draw(const GfxDraw *d, TargetEntry *e, int has_depth, cons
 	if (ndiff) {
         /* A single-draw CPU reference uses a reset depth/stencil buffer.
          * Preserve the diagnostic but explicitly classify dependent results as inconclusive. */
-        if (has_depth && (d->depth_func != 7 || d->stencil_func != 7))
+        if (has_depth && !coverage && (d->depth_func != 7 || d->stencil_func != 7))
             fprintf(stderr, "RECOMP_GFX_CHECK: INCONCLUSIVE: software depth/stencil history was reset (depth_func=%u stencil_func=%u); a mismatch is not proof of incorrect shader translation\n", d->depth_func, d->stencil_func);
 		fprintf(stderr, "RECOMP_GFX_CHECK: first divergent draw -- vprog=%#x fprog=%#x target=%#x %ux%u fmt=%#x\n"
 		                "  blend=%d depth_func=%u depth_write=%d stencil_func=%u cull=%d\n"
@@ -4586,6 +4699,7 @@ static void gfx_check_draw(const GfxDraw *d, TargetEntry *e, int has_depth, cons
 		        ndiff, e->width * e->height, tol, x0, y0, x1, y1);
 		gfx_check_write_ppm("gfxcheck_gpu.ppm", e->width, e->height, gpu_rgba);
 		gfx_check_write_ppm("gfxcheck_soft.ppm", e->width, e->height, soft_rgba);
+        if (coverage) gfx_check_write_ppm("gfxcheck_stencil_mask.ppm", e->width, e->height, coverage);
 		/* the textures it could read, decoded as the software path sees them (/tmp/gfxcheck_tex<unit>.ppm),
 		 * and which one the GPU path would bind instead if the address is a live render target */
 		for (int u = 0; u < 16; u++) {
@@ -4614,7 +4728,7 @@ static void gfx_check_draw(const GfxDraw *d, TargetEntry *e, int has_depth, cons
 		}
 		{ const UsseFragLayout *fl = usse_fragment_layout(usse_get(d->fprog)); if (fl) for (int i = 0; i < fl->niters; i++) if (fl->iters[i].is_tex) fprintf(stderr, "  iterator %d samples unit %d into PA%d\n", i, fl->iters[i].tex_unit, fl->iters[i].pa); }
 	}
-	free(gpu_rgba); free(soft_rgba);
+	free(gpu_rgba); free(soft_rgba); free(coverage); free(pre_rgba);
 }
 
 /* one draw on the CPU instead (a program the translator doesn't cover, a pipeline that couldn't be
