@@ -106,10 +106,10 @@ jobs:
             echo 'Stencil shader already in the checked-in header' >&2
             exit 1
           fi
-          printf '\\nstatic const uint32_t vk_stencil_mask_frag[] = {\\n' >> runtime/gfx/vk_shaders.h
+          printf '\nstatic const uint32_t vk_stencil_mask_frag[] = {\n' >> runtime/gfx/vk_shaders.h
           od -An -v -t x4 "$RUNNER_TEMP/stencil_mask.spv" \
             | awk '{ for (i = 1; i <= NF; i++) printf "0x%s,", $i; print "" }' >> runtime/gfx/vk_shaders.h
-          printf '};\\n' >> runtime/gfx/vk_shaders.h
+          printf '};\n' >> runtime/gfx/vk_shaders.h
           grep -q 'vk_stencil_mask_frag' runtime/gfx/vk_shaders.h
 
       - name: Check Diagnostics launch policy and log-file behavior
