@@ -4474,6 +4474,33 @@ static void batch_flush_body(const char *why) {
  * Reports only the first divergent draw for the whole run (this is meant to localise the first
  * bug, not enumerate every pixel of every later one it causes). */
 static int gfx_check_on(void) { static int c = -1; if (c < 0) c = getenv("RECOMP_GFX_CHECK") != 0; return c; }
+/* Limit expensive checks to the requested shader, then stop after 8 occurrences.
+ * This filter is evaluated BEFORE any target download or software draw. */
+static long gfx_check_fprog(void) {
+    static long addr = -2;
+    if (addr == -2) {
+        const char *v = getenv("RECOMP_GFX_CHECK_FPROG");
+        addr = v && *v ? strtol(v, 0, 16) : -1;
+    }
+    return addr;
+}
+static unsigned gfx_check_count;
+static int gfx_check_selected(const GfxDraw *d) {
+    if (!gfx_check_on() || gfx_check_count >= 8) return 0;
+    long addr = gfx_check_fprog();
+    if (addr >= 0 && (uint32_t)addr != d->fprog) return 0;
+    ++gfx_check_count;
+    return 1;
+}
+static int gfx_check_write_ppm(const char *path, uint32_t w, uint32_t h, const uint8_t *rgba) {
+    FILE *f = fopen(path, "wb");
+    if (!f) { fprintf(stderr, "RECOMP_GFX_CHECK: cannot create %s: %s\n", path, strerror(errno)); return 0; }
+    int ok = fprintf(f, "P6\n%u %u\n255\n", w, h) > 0;
+    for (uint32_t k = 0; ok && k < w * h; ++k) ok = fwrite(rgba + 4 * k, 1, 3, f) == 3;
+    if (fclose(f)) ok = 0;
+    fprintf(stderr, "RECOMP_GFX_CHECK: %s %s\n", ok ? "saved" : "failed writing", path);
+    return ok;
+}
 static int gfx_check_reported, full_reported;
 /* RECOMP_GFX_CHECK=rgb: ignore alpha (a target that is only ever presented never shows it, and an
  * alpha-only difference in a clear otherwise stops the check before any visible divergence) */
@@ -4518,7 +4545,7 @@ static void gfx_check_draw(const GfxDraw *d, TargetEntry *e, int has_depth, cons
 	}
 	/* RECOMP_GFX_CHECK_FPROG=<addr>: the full report (with image dumps) goes to the first divergent
 	 * draw of that fragment program instead of the first divergent draw overall */
-	static long want_fp = -2; if (want_fp == -2) { const char *e = getenv("RECOMP_GFX_CHECK_FPROG"); want_fp = e ? strtol(e, 0, 16) : -1; }
+	long want_fp = gfx_check_fprog();
 	static int full_done; int full = ndiff && !full_done && (want_fp < 0 || (uint32_t)want_fp == d->fprog);
 	if (full) full_done = full_reported = 1;
 	if (ndiff && !full && gfx_check_reported++ >= 0) {   /* the rest: one line per divergent draw */
@@ -4529,17 +4556,18 @@ static void gfx_check_draw(const GfxDraw *d, TargetEntry *e, int has_depth, cons
 		ndiff = 0;
 	}
 	if (ndiff) {
+        /* A single-draw CPU reference uses a reset depth/stencil buffer.
+         * Preserve the diagnostic but explicitly classify dependent results as inconclusive. */
+        if (has_depth && (d->depth_func != 7 || d->stencil_func != 7))
+            fprintf(stderr, "RECOMP_GFX_CHECK: INCONCLUSIVE: software depth/stencil history was reset (depth_func=%u stencil_func=%u); a mismatch is not proof of incorrect shader translation\n", d->depth_func, d->stencil_func);
 		fprintf(stderr, "RECOMP_GFX_CHECK: first divergent draw -- vprog=%#x fprog=%#x target=%#x %ux%u fmt=%#x\n"
 		                "  blend=%d depth_func=%u depth_write=%d stencil_func=%u cull=%d\n"
 		                "  %d/%u pixels differ (tol %d), bbox (%d,%d)-(%d,%d)\n",
 		        d->vprog, d->fprog, e->addr, e->width, e->height, e->format,
 		        d->blend.present, d->depth_func, d->depth_write, d->stencil_func, d->cull,
 		        ndiff, e->width * e->height, tol, x0, y0, x1, y1);
-		FILE *f = fopen("/tmp/gfxcheck_gpu.ppm", "wb");
-		if (f) { fprintf(f, "P6\n%u %u\n255\n", e->width, e->height); for (uint32_t i = 0; i < e->width * e->height; i++) fwrite(gpu_rgba + 4 * i, 1, 3, f); fclose(f); }
-		f = fopen("/tmp/gfxcheck_soft.ppm", "wb");
-		if (f) { fprintf(f, "P6\n%u %u\n255\n", e->width, e->height); for (uint32_t i = 0; i < e->width * e->height; i++) fwrite(soft_rgba + 4 * i, 1, 3, f); fclose(f); }
-		fprintf(stderr, "  saved /tmp/gfxcheck_gpu.ppm, /tmp/gfxcheck_soft.ppm\n");
+		gfx_check_write_ppm("gfxcheck_gpu.ppm", e->width, e->height, gpu_rgba);
+		gfx_check_write_ppm("gfxcheck_soft.ppm", e->width, e->height, soft_rgba);
 		/* the textures it could read, decoded as the software path sees them (/tmp/gfxcheck_tex<unit>.ppm),
 		 * and which one the GPU path would bind instead if the address is a live render target */
 		for (int u = 0; u < 16; u++) {
@@ -4549,9 +4577,8 @@ static void gfx_check_draw(const GfxDraw *d, TargetEntry *e, int has_depth, cons
 			fprintf(stderr, "  tex unit %d: data %#x fmt %#x %ux%u u_mode %#x v_mode %#x%s\n", u, t->data, t->format, t->width, t->height,
 			        t->u_mode, t->v_mode, live ? "  [live GPU render target: GPU samples its colour texture]" : "");
 			uint8_t *rgba = malloc(4u * t->width * t->height); gfx_decode_texture_rgba8(t, rgba);
-			char path[64]; snprintf(path, sizeof path, "/tmp/gfxcheck_tex%d.ppm", u);
-			FILE *tf = fopen(path, "wb");
-			if (tf) { fprintf(tf, "P6\n%u %u\n255\n", t->width, t->height); for (uint32_t i = 0; i < (uint32_t)t->width * t->height; i++) fwrite(rgba + 4 * i, 1, 3, tf); fclose(tf); }
+			char path[64]; snprintf(path, sizeof path, "gfxcheck_tex%d.ppm", u);
+			gfx_check_write_ppm(path, t->width, t->height, rgba);
 			free(rgba);
 		}
 		{   /* the interpreter's clip-space positions for the first vertices, to set against where the GPU drew */
@@ -5763,7 +5790,7 @@ void gfx_gpu_draw(const GfxDraw *d) {
 	 * above) in the target's own raw format, so the comparison below can run the software path
 	 * on an exact copy of what the GPU is about to draw onto, then diff the two results. */
 	uint8_t *check_pre = 0; uint32_t check_pre_bytes = 0;
-	if (gfx_check_on() && scene_entry->addr) {
+	if (scene_entry->addr && gfx_check_selected(d)) {
 		GfxTarget gt = target_entry_as_gfx(scene_entry);
 		check_pre_bytes = (uint32_t)gfx_target_bpp(&gt) * scene_entry->width * scene_entry->height;
 		check_pre = malloc(check_pre_bytes);
