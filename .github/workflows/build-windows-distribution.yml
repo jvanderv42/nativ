@@ -74,7 +74,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            zsh rsync unzip zip xz-utils ca-certificates file make glslc \
+            zsh rsync unzip zip xz-utils ca-certificates file make glslang-tools \
             python3-venv python3-pip
 
       # Nativ imports tomllib, which requires Python 3.11 or later.
