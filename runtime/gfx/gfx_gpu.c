@@ -4502,12 +4502,12 @@ void gfx_gpu_check_trigger(void) {
 static int gfx_check_selected(const GfxDraw *d) {
     if (!gfx_check_on()) return 0;
     if (getenv("RECOMP_GFX_CHECK_TRIGGER") && !__atomic_load_n(&gfx_check_armed, __ATOMIC_ACQUIRE)) return 0;
-    if (gfx_check_count >= 8) return 0;
+    if (__atomic_load_n(&gfx_check_count, __ATOMIC_RELAXED) >= 8) return 0;
     long addr = gfx_check_fprog();
     if (addr >= 0 && (uint32_t)addr != d->fprog) return 0;
-    ++gfx_check_count;
-    if (gfx_check_count == 1) fprintf(stderr, "RECOMP_GFX_CHECK: selected first draw of program %#x\n", d->fprog);
-    if (gfx_check_count == 8) fprintf(stderr, "RECOMP_GFX_CHECK: completed eight comparisons; no further draws will be checked\n");
+    unsigned sample = __atomic_add_fetch(&gfx_check_count, 1, __ATOMIC_RELAXED);
+    if (sample == 1) fprintf(stderr, "RECOMP_GFX_CHECK: selected first draw of program %#x\n", d->fprog);
+    if (sample == 8) fprintf(stderr, "RECOMP_GFX_CHECK: completed eight comparisons; no further draws will be checked\n");
     return 1;
 }
 static int gfx_check_write_ppm(const char *path, uint32_t w, uint32_t h, const uint8_t *rgba) {
