@@ -61,3 +61,25 @@ Remove-Item Env:RECOMP_GFX_CHECK, Env:RECOMP_GFX_CHECK_FPROG, Env:RECOMP_GFX_CHE
 ```
 
 The PowerShell session must remain in the distribution directory, or else the PPM files will be emitted into the actual working directory used at launch. Do not reuse older PPM files when reviewing a new comparison.
+
+## Phase 1 — GPU stencil-coverage reference (November 18)
+
+The earlier 40,875-pixel F11 mismatch was **inconclusive** because the CPU reference was initialized with cleared stencil and the target shader uses stencil function `5` (NOT_EQUAL).
+
+The experimental diagnostic now includes a GPU-side stencil-coverage pass that uses the same hardware stencil attachment, stencil comparison, reference and compare mask as the target draw. Its pipeline uses KEEP for all stencil operations, a zero stencil write mask, and no depth testing. A separate RGBA8 target receives white pixels where the comparison passes and black elsewhere. This target is read back strictly for the diagnostic; normal gameplay render targets and their contents are unchanged.
+
+For a supported draw, the software reference executes without its reset stencil test, and pixels outside the measured GPU coverage are replaced with their pre-draw colors before comparison. This permits a more meaningful **color-output comparison for the pixels the original stencil compare allows**, without assuming that stale CPU stencil bytes match the actual GPU stencil.
+
+### Scope restrictions (intentional)
+- Render scale must be 1×, the GPU color and depth/stencil surfaces must have matching dimensions, depth comparison must be ALWAYS, depth writing must be disabled, and the targeted draw must not modify stencil (unless its stencil write mask is zero).
+- When any of these conditions is absent, the diagnostic logs that coverage is unavailable and retains the previous **INCONCLUSIVE** warning for depth/stencil-dependent comparisons.
+- This is **not** a general depth/stencil readback, and it does not establish shader correctness on unrelated depth-tested draws. It also cannot prove fidelity to native Vita hardware when both paths share a decoding error.
+- The shader's GPU input textures must still be considered separately; a color-output disagreement could reflect an input-synchronization difference.
+
+### Expected new log / file
+`RECOMP_GFX_CHECK: GPU stencil coverage N/294912 pixels; software output masked using actual GPU stencil compare...`
+
+The first divergent selected draw produces `gfxcheck_gpu.ppm`, `gfxcheck_soft.ppm`, and new `gfxcheck_stencil_mask.ppm`. Compare all three and the `session.log`, not just the percentage of differing pixels.
+
+### Build note
+The new Vulkan fragment shader lives at `runtime/gfx/shaders/stencil_mask.frag`. The distribution workflow runs the existing `runtime/gfx/shaders/build.sh` script with `glslc` installed before compiling Windows. For manual source builds, regenerate `runtime/gfx/vk_shaders.h` using that script first. The first Windows build and the on-device comparison still require verification.
