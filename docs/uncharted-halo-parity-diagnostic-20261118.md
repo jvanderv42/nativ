@@ -82,4 +82,8 @@ For a supported draw, the software reference executes without its reset stencil 
 The first divergent selected draw produces `gfxcheck_gpu.ppm`, `gfxcheck_soft.ppm`, and new `gfxcheck_stencil_mask.ppm`. Compare all three and the `session.log`, not just the percentage of differing pixels.
 
 ### Build note
-The new Vulkan fragment shader lives at `runtime/gfx/shaders/stencil_mask.frag`. The distribution workflow runs the existing `runtime/gfx/shaders/build.sh` script with `glslc` installed before compiling Windows. For manual source builds, regenerate `runtime/gfx/vk_shaders.h` using that script first. The first Windows build and the on-device comparison still require verification.
+The new Vulkan fragment shader lives at `runtime/gfx/shaders/stencil_mask.frag`. The Windows distribution workflow compiles **only this additional shader** with `glslangValidator` and appends it to the package's generated `runtime/gfx/vk_shaders.h`. The existing precompiled Vulkan shaders are left untouched. Manual source builds must compile/append that shader or regenerate the header using the repository's shader build script before compiling the game. The Windows compilation check and on-device comparison must be verified separately.
+
+### Runtime installation / recompilation
+
+The Project Nativ launcher distribution includes runtime source; the game executable incorporates that source at its build. To test new GPU runtime code, rebuild/recompile the **Uncharted v1.03 game executable** with the new diagnostic distribution. Retain the prior known-good game executable and distribution for rollback. Merely extracting the distribution and launching an older already-compiled game may leave it using the old renderer.
