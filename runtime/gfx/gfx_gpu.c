@@ -6219,7 +6219,7 @@ void gfx_gpu_draw(const GfxDraw *d) {
                         srgb_enc &= ~(1u << unit);
                         scaled_units &= ~(1u << unit);
                         static unsigned reports;
-                        if (reports++ < 4) fprintf(stderr, "uc103 edge test: replaced ambient %s cube (unit %d) with black texture in fprog %#x\\n",
+                        if (reports++ < 4) fprintf(stderr, "uc103 edge test: replaced ambient %s cube (unit %d) with black texture in fprog %#x\n",
                                                    unit == 12 ? "specular" : "diffuse", unit, d->fprog);
                     }
                 }
