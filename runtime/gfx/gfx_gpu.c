@@ -1154,6 +1154,93 @@ static SDL_GPUTexture *dummy_texture(void) {
 	SDL_ReleaseGPUTransferBuffer(gpu(), xb);
 	return tex;
 }
+/* Experimental Uncharted 1.03 edge-outline A/B probe: a black six-face texture
+ * matching the GXM cube maps used by the ambient/specular pass. Never used
+ * unless RECOMP_UC103_EDGE_TEST explicitly requests it. The game's original
+ * texture data and shader instructions remain untouched. */
+static SDL_GPUTexture *uc103_edge_black_cube(void) {
+    static SDL_GPUTexture *tex;
+    static int attempted;
+    if (attempted) return tex;
+    attempted = 1;
+    SDL_GPUTextureCreateInfo tci = {
+        .type = SDL_GPU_TEXTURETYPE_2D,
+        .format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+        .usage = SDL_GPU_TEXTUREUSAGE_SAMPLER,
+        .width = 1, .height = 1, .layer_count_or_depth = 6,
+        .num_levels = 1, .sample_count = SDL_GPU_SAMPLECOUNT_1
+    };
+    SDL_GPUTexture *candidate = SDL_CreateGPUTexture(gpu(), &tci);
+    SDL_GPUTransferBufferCreateInfo xci = {
+        .usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD, .size = 24
+    };
+    SDL_GPUTransferBuffer *upload = candidate ? SDL_CreateGPUTransferBuffer(gpu(), &xci) : NULL;
+    if (!upload) {
+        if (candidate) SDL_ReleaseGPUTexture(gpu(), candidate);
+        fprintf(stderr, "uc103 edge test: failed creating six-face black cube texture: %s\n", SDL_GetError());
+        return NULL;
+    }
+    void *mapped = SDL_MapGPUTransferBuffer(gpu(), upload, false);
+    if (!mapped) {
+        SDL_ReleaseGPUTransferBuffer(gpu(), upload);
+        SDL_ReleaseGPUTexture(gpu(), candidate);
+        fprintf(stderr, "uc103 edge test: failed mapping cube texture upload: %s\n", SDL_GetError());
+        return NULL;
+    }
+    memset(mapped, 0, 24);
+    SDL_UnmapGPUTransferBuffer(gpu(), upload);
+    SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(gpu());
+    SDL_GPUCopyPass *copy = cmd ? SDL_BeginGPUCopyPass(cmd) : NULL;
+    if (!copy) {
+        if (cmd) SDL_CancelGPUCommandBuffer(cmd);
+        SDL_ReleaseGPUTransferBuffer(gpu(), upload);
+        SDL_ReleaseGPUTexture(gpu(), candidate);
+        fprintf(stderr, "uc103 edge test: failed starting cube texture upload: %s\n", SDL_GetError());
+        return NULL;
+    }
+    for (uint32_t face = 0; face < 6; face++) {
+        SDL_GPUTextureTransferInfo source = {
+            .transfer_buffer = upload, .offset = 4 * face,
+            .pixels_per_row = 1, .rows_per_layer = 1
+        };
+        SDL_GPUTextureRegion dest = {
+            .texture = candidate, .layer = face, .w = 1, .h = 1, .d = 1
+        };
+        SDL_UploadToGPUTexture(copy, &source, &dest, false);
+    }
+    SDL_EndGPUCopyPass(copy);
+    if (!SDL_SubmitGPUCommandBuffer(cmd)) {
+        SDL_ReleaseGPUTransferBuffer(gpu(), upload);
+        SDL_ReleaseGPUTexture(gpu(), candidate);
+        fprintf(stderr, "uc103 edge test: failed submitting cube texture upload: %s\n", SDL_GetError());
+        return NULL;
+    }
+    SDL_ReleaseGPUTransferBuffer(gpu(), upload);
+    tex = candidate;
+    return tex;
+}
+
+/* Diagnostic mode: 1 = ambient specular cube, 2 = ambient diffuse cube,
+ * 3 = both. A specific shader address AND the US-1.03-only game option must
+ * be present before altering any GPU binding. This makes the feature inert
+ * for every other shader and supported game by default. */
+static int uc103_edge_test_mode(void) {
+    static int mode = -1;
+    if (mode >= 0) return mode;
+    mode = 0;
+    const char *requested = getenv("RECOMP_UC103_EDGE_TEST");
+    if (!requested || !*requested || !strcmp(requested, "0")) return mode;
+    if (!settings_game_option("uc_halo_isolation")) {
+        fprintf(stderr, "uc103 edge test: unavailable outside the Uncharted 1.03 game pack\n");
+        return mode;
+    }
+    if (!strcmp(requested, "spec")) mode = 1;
+    else if (!strcmp(requested, "diff")) mode = 2;
+    else if (!strcmp(requested, "both")) mode = 3;
+    else fprintf(stderr, "uc103 edge test: invalid value '%s'; use spec, diff, both or unset\n", requested);
+    if (mode) fprintf(stderr, "uc103 edge test: active mode %s for fprog 0x1fa2e708 only (diagnostic, not a fix)\n", requested);
+    return mode;
+}
 /* (re)create e->tex for this texture and upload its contents: a 2D texture with every mip level
  * it carries (gfx_soft.c's chain addressing), so the sampler can minify like the hardware
  * instead of aliasing level 0; a cube map (layout 3) as a 6-layer 2D array, one level, its faces
@@ -6119,6 +6206,24 @@ void gfx_gpu_draw(const GfxDraw *d) {
 		for (int i = 0; i < pipe->nsmp; i++) {
 			int unit = pipe->smp_units[i];
 			bind_unit((unit >= 0 && unit < 16) ? &d->tex[unit] : 0, unit, &tsb[i], &srgb_dec, &srgb_enc, &scaled_units, "fprog", d->fprog, i);
+            /* Compare exactly one fragment program with its two environment
+             * cubes removed independently; keep the original shader, stencil,
+             * frame targets and all other texture bindings unchanged. */
+            if (d->fprog == 0x1fa2e708u && (unit == 11 || unit == 12)) {
+                const int mode = uc103_edge_test_mode();
+                if ((unit == 11 && (mode & 2)) || (unit == 12 && (mode & 1))) {
+                    SDL_GPUTexture *black = uc103_edge_black_cube();
+                    if (black) {
+                        tsb[i].texture = black;
+                        srgb_dec &= ~(1u << unit);
+                        srgb_enc &= ~(1u << unit);
+                        scaled_units &= ~(1u << unit);
+                        static unsigned reports;
+                        if (reports++ < 4) fprintf(stderr, "uc103 edge test: replaced ambient %s cube (unit %d) with black texture in fprog %#x\\n",
+                                                   unit == 12 ? "specular" : "diffuse", unit, d->fprog);
+                    }
+                }
+            }
 		}
 		ntsb = pipe->nsmp;
 		if (pipe->fetch && scene_entry->fetch_copy) {   /* the framebuffer copy, point-sampled, after the program's own textures */
